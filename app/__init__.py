@@ -1,0 +1,1 @@
+"""HomeStorage web application."""

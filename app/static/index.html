@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#245848">
+  <meta name="description" content="HomeStorage：让每一件物品都有自己的位置。家庭物品管理、位置追踪与到期提醒。">
+  <title>HomeStorage · 家中有序</title>
+  <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="toast-container" id="toasts" role="status" aria-live="polite"></div>
+  <div class="login-shell" id="login-view" hidden>
+    <form class="login-card login-form" id="login-form">
+      <div class="login-logo" aria-hidden="true">⌂</div>
+      <p class="eyebrow">HOME, IN ORDER</p>
+      <h1>欢迎回家</h1>
+      <p class="muted">输入家庭共享密码，打开你的物品档案。</p>
+      <label class="form-field"><span class="field-label">访问密码</span><input class="form-control" name="password" type="password" autocomplete="current-password" maxlength="4096" required autofocus></label>
+      <p id="login-error" class="error-banner" hidden role="alert"></p>
+      <button class="button primary" type="submit">进入 HomeStorage</button>
+      <p class="help-text">你的数据保存在自己的 NAS 上。</p>
+    </form>
+  </div>
+  <div class="app-shell" id="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#dashboard" aria-label="HomeStorage 首页">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="m6 14 10-8 10 8v12H6Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M11 26V16h10v10M11 20h10" stroke="currentColor" stroke-width="2"/></svg></span>
+        <span><span class="brand-name">HomeStorage<span class="brand-dot">.</span></span><span class="brand-tagline">家中有序，生活有数</span></span>
+      </a>
+      <p class="nav-section-label">我的家庭</p>
+      <nav class="desktop-nav" aria-label="主导航" id="desktop-nav"></nav>
+      <div class="sidebar-note"><span class="sidebar-note-icon" aria-hidden="true">✳</span><p>少一点寻找，<br>多一点生活。</p><span>把家里的每一件物品<br>安放在恰好的地方。</span></div>
+      <div class="sidebar-footer"><span class="connection-dot" aria-hidden="true"></span><span>NAS 私有存储</span><button id="logout-button" class="icon-button" data-action="logout" aria-label="退出登录" title="退出登录" hidden></button></div>
+    </aside>
+    <main class="content" id="main-content">
+      <header class="topbar"><div><p class="page-eyebrow" id="page-eyebrow">YOUR HOME, ORGANIZED</p><h1 class="page-title" id="page-title">家庭概览</h1><p class="page-subtitle" id="page-subtitle">好好收纳，也好好生活。</p></div><div class="topbar-actions"><button class="button secondary" data-action="export" id="export-button"></button><button class="button primary" data-action="add-item" id="add-item-button"></button></div></header>
+      <div id="page-error" class="error-banner" hidden role="alert"></div>
+      <section class="view" id="page-view" aria-live="polite"><div class="loading-state"><span class="spinner"></span><p>正在整理你的家庭档案…</p></div></section>
+      <footer class="content-footer"><span>让物品各归其位，让生活轻盈一点。</span><span>HomeStorage · 存于家中</span></footer>
+    </main>
+    <nav class="mobile-nav" id="mobile-nav" aria-label="主导航"></nav>
+  </div>
+  <dialog class="modal" id="item-modal" aria-labelledby="item-modal-title"></dialog>
+  <dialog class="modal" id="detail-modal" aria-labelledby="detail-modal-title"></dialog>
+  <dialog class="modal" id="location-modal" aria-labelledby="location-modal-title"></dialog>
+  <dialog class="modal" id="action-modal" aria-labelledby="action-modal-title"></dialog>
+  <dialog class="modal" id="qr-modal" aria-labelledby="qr-modal-title"></dialog>
+</body>
+</html>

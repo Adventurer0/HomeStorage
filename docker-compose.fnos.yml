@@ -1,0 +1,37 @@
+services:
+  homestorage:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: homestorage:local
+    pull_policy: build
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      DATA_DIR: /data
+      APP_TIMEZONE: Asia/Shanghai
+      # 在下面两个引号中填写自己的登录密码，不能留空。
+      HOME_STORAGE_PASSWORD: ""
+    command:
+      - sh
+      - -c
+      - ': "$${HOME_STORAGE_PASSWORD:?请在Compose中填写HOME_STORAGE_PASSWORD}"; exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers 1 --no-proxy-headers'
+    volumes:
+      - homestorage_data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  homestorage_data:
+    name: homestorage_data

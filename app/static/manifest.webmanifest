@@ -1,0 +1,12 @@
+{
+  "name": "HomeStorage · 家中有序",
+  "short_name": "HomeStorage",
+  "description": "家庭物品档案与位置管理，数据保存在自己的 NAS 上。",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f8f3",
+  "theme_color": "#245848",
+  "icons": [{"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}]
+}
