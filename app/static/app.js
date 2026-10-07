@@ -25,16 +25,19 @@ const ICONS = {
   trash: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
   printer: '<path d="M6 8V3h12v5M6 17H3V8h18v9h-3M6 14h12v7H6m11-10h1"/>',
   shield: '<path d="m12 3 8 3v6c0 6-8 10-8 10S4 18 4 12V6l8-3Z"/><path d="m8 12 3 3 5-6"/>',
+  chat: '<path d="M3 3h18v14H8l-5 4V3Z"/><path d="M7 7h10M7 11h7"/>',
+  mic: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/>',
+  tags: '<path d="M3 3h8l10 10-8 8L3 11V3Z"/><circle cx="7" cy="7" r="1"/>',
   refresh: '<path d="M20 8a9 9 0 0 0-15-3L3 8m0-5v5h5m-4 8a9 9 0 0 0 15 3l2-3m0 5v-5h-5"/>',
 };
 const icon = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ICONS.box}</svg>`;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 const number = value => Number(value || 0).toLocaleString('zh-CN');
 const STATUS = {in_stock: '在库', in_use: '使用中', lent: '已借出', depleted: '已用完', discarded: '已丢弃', lost: '已遗失'};
-const ACTION = {create: '登记物品', item_create: '登记物品', update: '编辑档案', item_update: '编辑档案', move: '移动位置', take_out: '取出使用', return: '归还入库', lend: '借出物品', consume: '消耗库存', restock: '补充库存', discard: '丢弃物品', lost: '标记遗失', location_create: '新增位置', location_update: '编辑位置', location_delete: '删除位置', search: '搜索物品'};
+const ACTION = {create: '登记物品', item_create: '登记物品', update: '编辑档案', item_update: '编辑档案', move: '移动位置', take_out: '取出使用', return: '归还入库', lend: '借出物品', consume: '消耗库存', restock: '补充库存', discard: '丢弃物品', lost: '标记遗失', location_create: '新增位置', location_update: '编辑位置', location_delete: '删除位置', search: '搜索物品', archive: '归档物品', restore: '恢复物品', category_create: '新增分类', category_update: '编辑分类', category_delete: '删除分类'};
 const LOCATION_TYPES = {home: '家庭', room: '房间', shelf: '货架 / 柜子', drawer: '抽屉', box: '收纳箱', other: '其他'};
-const ROUTES = {dashboard: ['家庭概览', '好好收纳，也好好生活。', 'grid', '概览'], items: ['物品档案', '找得到，用得好。每件物品都有迹可循。', 'box', '物品'], locations: ['收纳空间', '从房间到收纳箱，把家的每个角落串起来。', 'pin', '位置'], expiry: ['到期提醒', '提前看一眼，少一点浪费，多一点安心。', 'clock', '到期'], history: ['操作记录', '每一次取放、移动与补充，都有记录。', 'history', '记录']};
-const state = {route: 'dashboard', locations: [], categories: [], items: [], dashboard: null, logs: [], timezone: 'Asia/Shanghai', filters: {q: '', location_id: '', category: '', status: ''}, expiry: 'soon', selectedLocation: null, detail: null, authRequired: false, renderToken: 0};
+const ROUTES = {dashboard: ['家庭概览', '好好收纳，也好好生活。', 'grid', '概览'], items: ['物品档案', '找得到，用得好。每件物品都有迹可循。', 'box', '物品'], locations: ['收纳空间', '从房间到收纳箱，把家的每个角落串起来。', 'pin', '位置'], expiry: ['到期提醒', '提前看一眼，少一点浪费，多一点安心。', 'clock', '到期'], categories: ['分类管理', '按家里的习惯分类，让每一件物品都好找。', 'tags', '分类'], history: ['操作记录', '每一次取放、移动与补充，都有记录。', 'history', '记录']};
+const state = {route: 'dashboard', locations: [], categories: [], items: [], dashboard: null, logs: [], timezone: 'Asia/Shanghai', ai: {status: null, messages: [], input: '', generation: 0, busy: false, recording: false, transcribing: false}, filters: {q: '', location_id: '', category: '', category_id: '', status: '', archived: 'false'}, expiry: 'soon', selectedLocation: null, detail: null, authRequired: false, renderToken: 0};
 const $ = id => document.getElementById(id);
 
 async function api(path, options = {}) {
@@ -70,13 +73,18 @@ function date(value, withTime = false) {
 function today() { return new Intl.DateTimeFormat('en-CA', {timeZone: state.timezone, year: 'numeric', month: '2-digit', day: '2-digit'}).format(new Date()); }
 function imageUrl(value) { return typeof value === 'string' && /^\/uploads\/[A-Za-z0-9._-]+$/.test(value) ? value : ''; }
 function badge(status) { return `<span class="status-chip status-${esc(status)}">${esc(STATUS[status] || status)}</span>`; }
+function archived(item) { return Boolean(item.archived_at); }
+function archiveBadge(item) { return archived(item) ? '<span class="status-chip status-archived">已归档</span>' : ''; }
 function expiryBadge(item) {
+  if (archived(item)) return '';
   if (item.expiry_status === 'expired') return `<span class="chip expiry-expired">${icon('alert')} 已过期 ${number(Math.abs(item.remaining_days))} 天</span>`;
   if (item.expiry_status === 'soon') return `<span class="chip expiry-soon">${icon('clock')} ${item.remaining_days === 0 ? '今日到期' : `${number(item.remaining_days)} 天后到期`}</span>`;
   if (item.expiry_status === 'safe') return `<span class="chip expiry-safe">${icon('check')} ${number(item.remaining_days)} 天后到期</span>`;
   return '';
 }
 function option(value, label, selected) { return `<option value="${esc(value)}"${String(selected ?? '') === String(value) ? ' selected' : ''}>${esc(label)}</option>`; }
+function categoryOptions(selected) { return state.categories.filter(cat => cat.active || String(cat.id) === String(selected)).map(cat => option(cat.id, `${cat.name}${cat.active ? '' : '（已停用）'}`, selected)).join(''); }
+function hasFilters() { return Object.entries(state.filters).some(([key, value]) => key !== 'archived' ? Boolean(value) : value !== 'false'); }
 function locationOptions(selected, includeEmpty = true) { return `${includeEmpty ? option('', '请选择收纳位置', selected) : ''}${state.locations.map(loc => option(loc.id, loc.path, selected)).join('')}`; }
 function empty(title, subtitle, action = 'add-item', label = '登记第一件物品', symbol = 'box') { return `<div class="empty-state"><div class="empty-icon">${icon(symbol)}</div><h3>${esc(title)}</h3><p>${esc(subtitle)}</p>${action ? `<button class="button primary" data-action="${action}">${icon('plus')}${esc(label)}</button>` : ''}</div>`; }
 function loading() { return `<div class="loading-state"><span class="spinner"></span><p>正在读取家庭档案…</p></div>`; }
@@ -108,18 +116,18 @@ function renderDashboard(data) {
     ['refresh', data.in_use_count, '正在使用', '取放状态，随时追踪', 'blue'],
     ['clock', data.soon_count + data.expired_count, '需要关注', data.expired_count ? `${data.expired_count} 件已过期` : '留意物品有效期', 'orange'],
   ];
-  $('page-view').innerHTML = `<div class="hero-card"><div class="hero-copy"><span class="kicker">A LITTLE ORDER. A BETTER LIFE.</span><h2>每一件物品，<br>都有自己的位置。</h2><p>记录、寻找、取放。<br>把生活的琐碎，收纳成家的秩序。</p><div class="hero-tags"><span>${icon('shield')} 数据留在家中</span><span>${icon('history')} 每次取放可追溯</span></div></div><div class="hero-visual">${illustration}</div></div><div class="metric-grid">${metrics.map(([symbol, value, label, sub, color]) => `<div class="metric-card"><span class="metric-icon metric-${color}">${icon(symbol)}</span><span class="metric-value">${number(value)}<span>${symbol === 'pin' ? '处' : '种'}</span></span><span class="metric-label">${label}</span><span class="metric-trend">${esc(sub)}</span></div>`).join('')}</div><div class="dashboard-grid"><section class="panel"><div class="panel-header"><div><h2 class="panel-title">${icon('clock')} 到期提醒</h2><p class="panel-subtitle">留意保质期，让每一份物品物尽其用</p></div><a class="text-link" href="#expiry">查看全部 ${icon('arrow')}</a></div><div class="panel-body">${data.expiring_items.length ? data.expiring_items.slice(0, 4).map(expiryRow).join('') : empty('暂时没有到期提醒', '填写物品有效期，临近到期时会在这里提醒你。', null, '', 'leaf')}</div></section><section class="panel"><div class="panel-header"><div><h2 class="panel-title">${icon('history')} 最近动态</h2><p class="panel-subtitle">看看家里物品的新变化</p></div><a class="text-link" href="#history">全部记录 ${icon('arrow')}</a></div><div class="panel-body">${data.recent_logs.length ? data.recent_logs.slice(0, 5).map(log => logRow(log, true)).join('') : empty('你的家庭档案，从这里开始', '登记第一件物品，它的每一次变化都会被记住。')}</div></section></div>${data.total_items === 0 ? `<section class="getting-started"><div>${icon('pin')}<span><strong>给物品一个准确的地址</strong><span>先添加房间、柜子或收纳箱，再开始登记物品。</span></span></div><button class="button secondary" data-action="add-location">${icon('plus')} 添加收纳位置</button></section>` : ''}`;
+  $('page-view').innerHTML = `<div class="hero-card"><div class="hero-copy"><span class="kicker">A LITTLE ORDER. A BETTER LIFE.</span><h2>每一件物品，<br>都有自己的位置。</h2><p>记录、寻找、取放。<br>把生活的琐碎，收纳成家的秩序。</p><div class="hero-tags"><span>${icon('shield')} 数据留在家中</span><span>${icon('history')} 每次取放可追溯</span></div></div><div class="hero-visual">${illustration}</div></div><div class="metric-grid">${metrics.map(([symbol, value, label, sub, color]) => `<div class="metric-card"><span class="metric-icon metric-${color}">${icon(symbol)}</span><span class="metric-value">${number(value)}<span>${symbol === 'pin' ? '处' : '种'}</span></span><span class="metric-label">${label}</span><span class="metric-trend">${esc(sub)}</span></div>`).join('')}</div>${aiPanel()}<div class="dashboard-grid"><section class="panel"><div class="panel-header"><div><h2 class="panel-title">${icon('clock')} 到期提醒</h2><p class="panel-subtitle">留意保质期，让每一份物品物尽其用</p></div><a class="text-link" href="#expiry">查看全部 ${icon('arrow')}</a></div><div class="panel-body">${data.expiring_items.length ? data.expiring_items.slice(0, 4).map(expiryRow).join('') : empty('暂时没有到期提醒', '填写物品有效期，临近到期时会在这里提醒你。', null, '', 'leaf')}</div></section><section class="panel"><div class="panel-header"><div><h2 class="panel-title">${icon('history')} 最近动态</h2><p class="panel-subtitle">看看家里物品的新变化</p></div><a class="text-link" href="#history">全部记录 ${icon('arrow')}</a></div><div class="panel-body">${data.recent_logs.length ? data.recent_logs.slice(0, 5).map(log => logRow(log, true)).join('') : empty('你的家庭档案，从这里开始', '登记第一件物品，它的每一次变化都会被记住。')}</div></section></div>${data.total_items === 0 ? `<section class="getting-started"><div>${icon('pin')}<span><strong>给物品一个准确的地址</strong><span>先添加房间、柜子或收纳箱，再开始登记物品。</span></span></div><button class="button secondary" data-action="add-location">${icon('plus')} 添加收纳位置</button></section>` : ''}`;
 }
 function itemCard(item) {
   const photo = imageUrl(item.image_url);
-  return `<button class="item-card" data-action="detail" data-id="${item.id}"><span class="item-photo">${photo ? `<img src="${esc(photo)}" alt="${esc(item.name)}的照片" loading="lazy">` : `<span class="item-photo-placeholder">${icon('box')}<span>未添加照片</span></span>`}<span class="item-photo-status">${badge(item.status)}</span></span><span class="item-body"><span class="item-meta">${esc(item.category)}</span><span class="item-title">${esc(item.name)}</span><span class="item-path">${icon('pin')}${esc(item.location_path)}</span>${expiryBadge(item)}<span class="item-bottom"><span class="item-quantity"><strong>${number(item.quantity)}</strong> ${esc(item.unit)}</span><span class="item-date">${date(item.stored_date)} 入库</span></span></span></button>`;
+  return `<button class="item-card" data-action="detail" data-id="${item.id}"><span class="item-photo">${photo ? `<img src="${esc(photo)}" alt="${esc(item.name)}的照片" loading="lazy">` : `<span class="item-photo-placeholder">${icon('box')}<span>未添加照片</span></span>`}<span class="item-photo-status">${badge(item.status)}${archiveBadge(item)}</span></span><span class="item-body"><span class="item-meta">${esc(item.category)}</span><span class="item-title">${esc(item.name)}</span><span class="item-path">${icon('pin')}${esc(item.location_path)}</span>${expiryBadge(item)}<span class="item-bottom"><span class="item-quantity"><strong>${number(item.quantity)}</strong> ${esc(item.unit)}</span><span class="item-date">${date(item.stored_date)} 入库</span></span></span></button>`;
 }
 function itemFilters() {
   const f = state.filters;
-  return `<div class="toolbar"><form class="search-form" id="search-form"><div class="search-wrap">${icon('search')}<input class="search-input" id="item-search" name="query" type="search" placeholder="搜索名称、品牌、型号或标签…" maxlength="200" aria-label="搜索物品" value="${esc(f.q)}"><button class="button subtle button-small" type="submit">搜索</button></div></form><div class="filter-row"><select class="form-control" data-filter="location_id" aria-label="筛选位置">${option('', '全部位置', f.location_id)}${locationOptions(f.location_id, false)}</select><select class="form-control" data-filter="category" aria-label="筛选分类">${option('', '全部分类', f.category)}${state.categories.map(cat => option(cat, cat, f.category)).join('')}</select><select class="form-control" data-filter="status" aria-label="筛选状态">${option('', '全部状态', f.status)}${Object.entries(STATUS).map(([val, name]) => option(val, name, f.status)).join('')}</select>${Object.values(f).some(Boolean) ? `<button class="button subtle button-small" data-action="clear-filters">清除筛选</button>` : ''}</div></div>`;
+  return `<div class="toolbar"><form class="search-form" id="search-form"><div class="search-wrap">${icon('search')}<input class="search-input" id="item-search" name="query" type="search" placeholder="搜索名称、品牌、型号或标签…" maxlength="200" aria-label="搜索物品" value="${esc(f.q)}"><button class="button subtle button-small" type="submit">搜索</button></div></form><div class="filter-row"><select class="form-control" data-filter="location_id" aria-label="筛选位置">${option('', '全部位置', f.location_id)}${locationOptions(f.location_id, false)}</select><select class="form-control" data-filter="category_id" aria-label="筛选分类">${option('', '全部分类', f.category_id)}${state.categories.map(cat => option(cat.id, `${cat.name}${cat.active ? '' : '（已停用）'}`, f.category_id)).join('')}</select><select class="form-control" data-filter="status" aria-label="筛选状态">${option('', '全部状态', f.status)}${Object.entries(STATUS).map(([val, name]) => option(val, name, f.status)).join('')}</select><select class="form-control" data-filter="archived" aria-label="筛选归档">${option('false', '未归档', f.archived)}${option('true', '已归档', f.archived)}${option('all', '包含归档', f.archived)}</select>${hasFilters() ? `<button class="button subtle button-small" data-action="clear-filters">清除筛选</button>` : ''}</div></div>`;
 }
 function renderItems(items) {
-  const filtering = Object.values(state.filters).some(Boolean);
+  const filtering = hasFilters();
   $('page-view').innerHTML = `${itemFilters()}<div class="collection-heading"><span>共 <strong>${number(items.length)}</strong> 种物品</span><span class="muted">清晰的档案，安心的日常</span></div>${items.length ? `<div class="item-grid">${items.map(itemCard).join('')}</div>` : empty(filtering ? '没有找到匹配的物品' : '家里的宝贝，值得好好记住', filtering ? '换个关键词或清除筛选，再试一次。' : '从一件常用物品开始，拍张照，选个位置，建立你的家庭物品档案。', filtering ? 'clear-filters' : 'add-item', filtering ? '清除筛选' : '登记第一件物品')}`;
 }
 function renderExpiry(items) {
@@ -146,11 +154,12 @@ async function refreshPage(showLoading = true) {
     else if (state.route === 'items') { const params = new URLSearchParams(Object.entries(state.filters).filter(([,value]) => value)); const items = await api(`/api/items?${params}`); if (token !== state.renderToken) return; state.items = items; renderItems(items); }
     else if (state.route === 'expiry') { const items = await api(`/api/items?expiry=${state.expiry}`); if (token !== state.renderToken) return; renderExpiry(items); }
     else if (state.route === 'locations') { state.locations = await api('/api/locations'); if (token !== state.renderToken) return; renderLocations(); }
+    else if (state.route === 'categories') { state.categories = await api('/api/categories'); if (token !== state.renderToken) return; renderCategories(); }
     else if (state.route === 'history') { const logs = await api('/api/logs?limit=200'); if (token !== state.renderToken) return; renderHistory(logs); }
   } catch (error) { if (token !== state.renderToken) return; showError(error); $('page-view').innerHTML = empty('暂时无法读取数据', '请检查 NAS 服务是否运行，稍后重新连接。', 'retry', '重新连接', 'refresh'); }
 }
 function navigate(route) { if (location.hash === `#${route}`) { state.route = route; refreshPage(); } else location.hash = route; }
-async function refreshAfterMutation() { state.locations = await api('/api/locations'); state.dashboard = await api('/api/dashboard'); await refreshPage(false); }
+async function refreshAfterMutation() { [state.locations, state.categories, state.dashboard] = await Promise.all([api('/api/locations'), api('/api/categories'), api('/api/dashboard')]); await refreshPage(false); }
 function modalHeader(title, id, subtitle = '') { return `<div class="modal-header"><div><h2 class="modal-title" id="${id}">${esc(title)}</h2>${subtitle ? `<p class="panel-subtitle">${esc(subtitle)}</p>` : ''}</div><button type="button" class="icon-button modal-close" data-action="close-modal" aria-label="关闭">${icon('close')}</button></div>`; }
 function openModal(id, content) { const dialog = $(id); dialog.innerHTML = content; if (!dialog.open) dialog.showModal(); return dialog; }
 function field(label, name, value = '', type = 'text', extra = '', wide = false) { return `<label class="form-field${wide ? ' span-2' : ''}"><span class="field-label">${esc(label)}</span><input class="form-control" name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`; }
@@ -158,17 +167,18 @@ function selectField(label, name, values, value = '', extra = '') { return `<lab
 
 async function openItemForm(id = null) {
   try {
-    const item = id ? await api(`/api/items/${id}`) : {quantity: 1, unit: '件', warning_days: 7, category: '其他', stored_date: today(), location_id: state.filters.location_id || state.selectedLocation || state.locations[0]?.id || ''};
+    const item = id ? await api(`/api/items/${id}`) : {quantity: 1, unit: '件', warning_days: 7, category_id: state.categories.find(cat => cat.active && cat.name === '其他')?.id || state.categories.find(cat => cat.active)?.id || '', stored_date: today(), location_id: state.filters.location_id || state.selectedLocation || state.locations[0]?.id || ''};
     const photo = imageUrl(item.image_url);
-    openModal('item-modal', `<form id="item-form" data-id="${id || ''}" data-image="${esc(item.image_url || '')}">${modalHeader(id ? '编辑物品档案' : '登记一件物品', 'item-modal-title', id ? '库存和位置变化请在物品详情中操作，会自动留痕。' : '拍张照、选个位置，让物品有迹可循。')}<div class="modal-body"><div class="image-upload"><div class="image-preview" id="image-preview">${photo ? `<img src="${esc(photo)}" alt="物品照片">` : icon('image')}</div><div><label class="button secondary button-small" for="item-photo">${icon('image')} ${photo ? '更换照片' : '添加照片'}</label><input id="item-photo" type="file" name="photo" accept="image/jpeg,image/png,image/webp" class="screen-reader"><p class="help-text">JPG、PNG 或 WebP，最大 10 MB</p>${photo ? '<button type="button" class="text-link" data-action="remove-photo">移除照片</button>' : ''}</div></div><div class="form-grid">${field('物品名称 *', 'name', item.name, 'text', 'required maxlength="200" placeholder="例如：便携电动打气筒"', true)}${selectField('物品分类', 'category', state.categories.map(cat => [cat, cat]), item.category)}${id ? `<div class="form-field"><span class="field-label">当前收纳位置</span><div class="form-control static-field">${esc(item.location_path)}</div></div>` : `<label class="form-field"><span class="field-label">收纳位置 *</span><select name="location_id" class="form-control" required>${locationOptions(item.location_id)}</select></label>`}${id ? `<div class="form-field"><span class="field-label">当前库存</span><div class="form-control static-field">${number(item.quantity)} ${esc(item.unit)} · ${esc(STATUS[item.status])}</div></div>` : field('数量 *', 'quantity', item.quantity, 'number', 'required min="0" max="1000000000" step="1"')}${field('计量单位', 'unit', item.unit, 'text', 'required maxlength="30" placeholder="件、包、瓶…"')}${field('品牌', 'brand', item.brand, 'text', 'maxlength="120"')}${field('型号 / 规格', 'model', item.model, 'text', 'maxlength="120"')}${field('入库日期 *', 'stored_date', item.stored_date, 'date', 'required')}${field('购买日期', 'purchase_date', item.purchase_date, 'date')}${field('购买价格（元）', 'purchase_price', item.purchase_price ?? '', 'number', 'min="0" step="0.01"')}${field('有效期至', 'expires_on', item.expires_on, 'date')}${field('提前提醒（天）', 'warning_days', item.warning_days, 'number', 'required min="0" max="3650" step="1"')}${field('标签', 'tags', item.tags, 'text', 'maxlength="500" placeholder="用逗号分隔，例如：露营,常用"')}<label class="form-field span-2"><span class="field-label">备注</span><textarea class="form-control" name="notes" rows="3" maxlength="4000" placeholder="配件、注意事项，或你想记住的小细节…">${esc(item.notes)}</textarea></label></div><p class="error-banner form-error" hidden role="alert"></p></div><div class="modal-footer"><button type="button" class="button secondary" data-action="close-modal">取消</button><button type="submit" class="button primary">${icon('check')} ${id ? '保存档案' : '登记物品'}</button></div></form>`);
+    openModal('item-modal', `<form id="item-form" data-id="${id || ''}" data-image="${esc(item.image_url || '')}">${modalHeader(id ? '编辑物品档案' : '登记一件物品', 'item-modal-title', id ? '库存和位置变化请在物品详情中操作，会自动留痕。' : '拍张照、选个位置，让物品有迹可循。')}<div class="modal-body"><div class="image-upload"><div class="image-preview" id="image-preview">${photo ? `<img src="${esc(photo)}" alt="物品照片">` : icon('image')}</div><div><label class="button secondary button-small" for="item-photo">${icon('image')} ${photo ? '更换照片' : '添加照片'}</label><input id="item-photo" type="file" name="photo" accept="image/jpeg,image/png,image/webp" class="screen-reader"><p class="help-text">JPG、PNG 或 WebP，最大 10 MB</p>${photo ? '<button type="button" class="text-link" data-action="remove-photo">移除照片</button>' : ''}</div></div><div class="form-grid">${field('物品名称 *', 'name', item.name, 'text', 'required maxlength="200" placeholder="例如：便携电动打气筒"', true)}<label class="form-field"><span class="field-label">物品分类 *</span><select class="form-control" name="category_id" required>${option('', '请选择分类', item.category_id)}${categoryOptions(item.category_id)}</select><span class="help-text">在“分类管理”中自定义分类。</span></label>${id ? `<div class="form-field"><span class="field-label">当前收纳位置</span><div class="form-control static-field">${esc(item.location_path)}</div></div>` : `<label class="form-field"><span class="field-label">收纳位置 *</span><select name="location_id" class="form-control" required>${locationOptions(item.location_id)}</select></label>`}${id ? `<div class="form-field"><span class="field-label">当前库存</span><div class="form-control static-field">${number(item.quantity)} ${esc(item.unit)} · ${esc(STATUS[item.status])}</div></div>` : field('数量 *', 'quantity', item.quantity, 'number', 'required min="0" max="1000000000" step="1"')}${field('计量单位', 'unit', item.unit, 'text', 'required maxlength="30" placeholder="件、包、瓶…"')}${field('品牌', 'brand', item.brand, 'text', 'maxlength="120"')}${field('型号 / 规格', 'model', item.model, 'text', 'maxlength="120"')}${field('入库日期 *', 'stored_date', item.stored_date, 'date', 'required')}${field('购买日期', 'purchase_date', item.purchase_date, 'date')}${field('购买价格（元）', 'purchase_price', item.purchase_price ?? '', 'number', 'min="0" step="0.01"')}${field('有效期至', 'expires_on', item.expires_on, 'date')}${field('提前提醒（天）', 'warning_days', item.warning_days, 'number', 'required min="0" max="3650" step="1"')}${field('标签', 'tags', item.tags, 'text', 'maxlength="500" placeholder="用逗号分隔，例如：露营,常用"')}<label class="form-field span-2"><span class="field-label">备注</span><textarea class="form-control" name="notes" rows="3" maxlength="4000" placeholder="配件、注意事项，或你想记住的小细节…">${esc(item.notes)}</textarea></label></div><p class="error-banner form-error" hidden role="alert"></p></div><div class="modal-footer"><button type="button" class="button secondary" data-action="close-modal">取消</button><button type="submit" class="button primary">${icon('check')} ${id ? '保存档案' : '登记物品'}</button></div></form>`);
   } catch (error) { toast(error.message, true); }
 }
 async function submitItem(form) {
   const data = new FormData(form);
   const payload = {};
-  ['name', 'category', 'unit', 'brand', 'model', 'tags', 'notes', 'stored_date'].forEach(key => payload[key] = String(data.get(key) || '').trim());
+  ['name', 'unit', 'brand', 'model', 'tags', 'notes', 'stored_date'].forEach(key => payload[key] = String(data.get(key) || '').trim());
   ['purchase_date', 'expires_on'].forEach(key => payload[key] = data.get(key) || null);
   payload.purchase_price = data.get('purchase_price') === '' ? null : Number(data.get('purchase_price'));
+  payload.category_id = Number(data.get('category_id'));
   payload.warning_days = Number(data.get('warning_days'));
   payload.image_url = form.dataset.image || null;
   const photo = data.get('photo');
@@ -191,9 +201,9 @@ async function openDetail(id) {
   try {
     const [item, logs] = await Promise.all([api(`/api/items/${id}`), api(`/api/logs?item_id=${id}&limit=50`)]);
     state.detail = item;
-    const actions = {in_stock: ['take_out', 'move', 'lend', 'consume', 'restock', 'discard', 'lost'], in_use: ['return', 'lend', 'discard', 'lost'], lent: ['return', 'discard', 'lost'], depleted: ['restock'], discarded: [], lost: []}[item.status] || [];
+    const actions = archived(item) ? [] : {in_stock: ['take_out', 'move', 'lend', 'consume', 'restock', 'discard', 'lost'], in_use: ['return', 'lend', 'discard', 'lost'], lent: ['return', 'discard', 'lost'], depleted: ['restock'], discarded: [], lost: []}[item.status] || [];
     const photo = imageUrl(item.image_url);
-    openModal('detail-modal', `${modalHeader('物品详情', 'detail-modal-title')}<div class="modal-body"><div class="detail-hero"><div class="detail-image">${photo ? `<img src="${esc(photo)}" alt="${esc(item.name)}的照片">` : icon('box')}</div><div class="detail-info"><span class="eyebrow">${esc(item.category)}</span><h3 class="detail-title">${esc(item.name)}</h3><div class="detail-badges">${badge(item.status)}${expiryBadge(item)}</div><p class="item-path">${icon('pin')}${esc(item.location_path)}</p><div class="detail-quantity"><strong>${number(item.quantity)}</strong> ${esc(item.unit)}</div></div></div><div class="detail-grid">${datum('品牌 / 型号', [item.brand, item.model].filter(Boolean).join(' / '))}${datum('入库日期', date(item.stored_date))}${datum('购买日期', date(item.purchase_date))}${datum('购买价格', item.purchase_price == null ? '' : `¥ ${number(item.purchase_price)}`)}${datum('有效期至', date(item.expires_on))}${datum('提前提醒', `${item.warning_days} 天`)}${datum('标签', item.tags)}${datum('档案更新', date(item.updated_at, true))}</div>${item.notes ? `<div class="detail-notes"><span class="detail-label">备注</span><p>${esc(item.notes)}</p></div>` : ''}${actions.length ? `<h3 class="section-title">物品操作</h3><div class="action-grid">${actions.map(action => `<button class="button ${['discard', 'lost'].includes(action) ? 'subtle action-muted' : 'secondary'}" data-action="item-action" data-value="${action}" data-id="${item.id}">${icon(action === 'move' ? 'pin' : action === 'discard' ? 'trash' : action === 'restock' ? 'plus' : action === 'lost' ? 'alert' : 'refresh')}${esc(ACTION[action])}</button>`).join('')}</div><p class="help-text">取出、归还与借出会更新整件物品的状态；数量变化请使用消耗或补充。</p>` : `<p class="help-text">此物品已归档，操作记录仍然保留。</p>`}<h3 class="section-title">操作记录</h3><div class="detail-logs">${logs.length ? logs.map(log => logRow(log, true)).join('') : '<p class="muted">暂无记录</p>'}</div></div><div class="modal-footer"><button class="button secondary" data-action="close-modal">关闭</button><button class="button primary" data-action="edit-item" data-id="${item.id}">${icon('edit')} 编辑档案</button></div>`);
+    openModal('detail-modal', `${modalHeader('物品详情', 'detail-modal-title')}<div class="modal-body"><div class="detail-hero"><div class="detail-image">${photo ? `<img src="${esc(photo)}" alt="${esc(item.name)}的照片">` : icon('box')}</div><div class="detail-info"><span class="eyebrow">${esc(item.category)}</span><h3 class="detail-title">${esc(item.name)}</h3><div class="detail-badges">${badge(item.status)}${archiveBadge(item)}${expiryBadge(item)}</div><p class="item-path">${icon('pin')}${esc(item.location_path)}</p><div class="detail-quantity"><strong>${number(item.quantity)}</strong> ${esc(item.unit)}</div></div></div><div class="detail-grid">${datum('品牌 / 型号', [item.brand, item.model].filter(Boolean).join(' / '))}${datum('入库日期', date(item.stored_date))}${datum('购买日期', date(item.purchase_date))}${datum('购买价格', item.purchase_price == null ? '' : `¥ ${number(item.purchase_price)}`)}${datum('有效期至', date(item.expires_on))}${datum('提前提醒', `${item.warning_days} 天`)}${datum('标签', item.tags)}${datum('档案更新', date(item.updated_at, true))}${archived(item) ? datum('归档时间', date(item.archived_at, true)) : ''}</div>${item.notes ? `<div class="detail-notes"><span class="detail-label">备注</span><p>${esc(item.notes)}</p></div>` : ''}${actions.length ? `<h3 class="section-title">物品操作</h3><div class="action-grid">${actions.map(action => `<button class="button ${['discard', 'lost'].includes(action) ? 'subtle action-muted' : 'secondary'}" data-action="item-action" data-value="${action}" data-id="${item.id}">${icon(action === 'move' ? 'pin' : action === 'discard' ? 'trash' : action === 'restock' ? 'plus' : action === 'lost' ? 'alert' : 'refresh')}${esc(ACTION[action])}</button>`).join('')}</div><p class="help-text">取出、归还与借出会更新整件物品的状态；数量变化请使用消耗或补充。</p>` : `<p class="help-text">${archived(item) ? '物品已归档，保留库存、位置和历史。恢复后可继续取放。' : '当前状态没有可用的库存操作。档案和历史仍然保留。'}</p>`}<h3 class="section-title">操作记录</h3><div class="detail-logs">${logs.length ? logs.map(log => logRow(log, true)).join('') : '<p class="muted">暂无记录</p>'}</div></div><div class="modal-footer"><button class="button secondary" data-action="close-modal">关闭</button><button class="button secondary" data-action="${archived(item) ? 'restore-item' : 'archive-item'}" data-id="${item.id}">${icon(archived(item) ? 'refresh' : 'package')} ${archived(item) ? '恢复物品' : '归档物品'}</button><button class="button primary" data-action="edit-item" data-id="${item.id}">${icon('edit')} 编辑档案</button></div>`);
   } catch (error) { toast(error.message, true); }
 }
 async function openAction(id, action) {
@@ -235,25 +245,180 @@ async function openQr(id) {
   const src = `/api/locations/${id}/qr?base_url=${encodeURIComponent(location.origin)}`;
   openModal('qr-modal', `${modalHeader('位置二维码', 'qr-modal-title', '贴在柜子或收纳箱上，扫码快速查看物品。')}<div class="modal-body qr-print-content"><div class="qr-card"><p class="eyebrow">HOME STORAGE</p><h3>${esc(loc.name)}</h3><p>${esc(loc.path)}</p><img class="qr-image" src="${src}" width="240" height="240" alt="${esc(loc.name)}位置二维码"><span class="location-code">${loc.code ? esc(loc.code) : `位置 #${loc.id}`}</span><p class="help-text">扫码查看此位置及下级位置中的物品</p></div><p class="help-text qr-network-note">二维码使用当前地址 ${esc(location.origin)}。扫码设备需能访问这个 NAS 地址。</p></div><div class="modal-footer"><button class="button secondary" data-action="close-modal">关闭</button><button class="button primary" data-action="print-qr">${icon('printer')} 打印标签</button></div>`);
 }
-function showLogin() { document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close()); $('app-shell').hidden = true; $('login-view').hidden = false; document.querySelector('#login-form input').focus(); }
+function renderCategories() {
+  $('page-view').innerHTML = `<section class="panel category-panel"><div class="panel-header"><div><h2 class="panel-title">${icon('tags')} 我的分类</h2><p class="panel-subtitle">名称随时可改，已有物品会继续关联同一个分类。</p></div><button class="button primary" data-action="add-category">${icon('plus')} 新增分类</button></div><div class="panel-body category-list">${state.categories.length ? state.categories.map(cat => `<div class="category-row"><div class="category-info"><strong>${esc(cat.name)}</strong><span>排序 ${number(cat.sort_order)} · ${number(cat.item_count)} 件档案${cat.active ? '' : ' · 已停用'}</span></div><div class="category-actions"><button class="button secondary button-small" data-action="edit-category" data-id="${cat.id}">${icon('edit')} 编辑</button><button class="button subtle button-small" data-action="toggle-category" data-id="${cat.id}" aria-label="${cat.active ? '停用' : '启用'}分类 ${esc(cat.name)}">${cat.active ? '停用' : '启用'}</button><button class="icon-button" data-action="delete-category" data-id="${cat.id}" title="删除分类" aria-label="删除分类 ${esc(cat.name)}">${icon('trash')}</button></div></div>`).join('') : empty('分类由你来定', '创建适合自己家的分类，例如：健身器材、露营装备。', 'add-category', '新增分类', 'tags')}</div></section><p class="help-text">排序数值越小越靠前。停用后无法用于新物品，已有档案继续保留；关联物品（含归档物品）的分类不能删除。</p>`;
+}
+function openCategoryForm(id = null) {
+  const category = state.categories.find(cat => cat.id === id) || {name: '', sort_order: state.categories.length ? Math.max(...state.categories.map(cat => Number(cat.sort_order))) + 10 : 0};
+  openModal('category-modal', `<form id="category-form" data-id="${id || ''}">${modalHeader(id ? '编辑分类' : '新增分类', 'category-modal-title')}<div class="modal-body"><div class="form-grid">${field('分类名称 *', 'name', category.name, 'text', 'required maxlength="80" placeholder="例如：健身器材"', true)}${field('排序', 'sort_order', category.sort_order, 'number', 'required min="-100000" max="100000" step="1"')}</div><p class="help-text">改名后已有物品会显示新名称，历史记录仍然保留。</p><p class="error-banner form-error" hidden role="alert"></p></div><div class="modal-footer"><button class="button secondary" type="button" data-action="close-modal">取消</button><button class="button primary" type="submit">保存分类</button></div></form>`);
+}
+async function submitCategory(form) {
+  const data = new FormData(form);
+  await api(form.dataset.id ? `/api/categories/${form.dataset.id}` : '/api/categories', {method: form.dataset.id ? 'PATCH' : 'POST', body: JSON.stringify({name: String(data.get('name') || '').trim(), sort_order: Number(data.get('sort_order'))})});
+  $('category-modal').close(); toast('分类已保存。'); await refreshAfterMutation();
+}
+function confirmDeleteCategory(id) {
+  const category = state.categories.find(cat => cat.id === id); if (!category) return;
+  openModal('category-modal', `<form id="delete-category-form" data-id="${id}">${modalHeader('删除分类', 'category-modal-title')}<div class="modal-body"><p>确认删除“${esc(category.name)}”？</p><p class="help-text">${category.item_count ? `此分类关联 ${number(category.item_count)} 件物品，请先修改这些物品的分类再删除。` : '删除后无法恢复。已有物品不会被删除。'}</p><p class="error-banner form-error" hidden role="alert"></p></div><div class="modal-footer"><button class="button secondary" type="button" data-action="close-modal">取消</button><button class="button danger" type="submit"${category.item_count ? ' disabled' : ''}>确认删除</button></div></form>`);
+}
+async function confirmArchive(id, restoring = false) {
+  try {
+    const item = await api(`/api/items/${id}`);
+    openModal('action-modal', `<form id="archive-form" data-id="${id}" data-restoring="${restoring}">${modalHeader(restoring ? '恢复物品' : '归档物品', 'action-modal-title')}<div class="modal-body"><p class="action-description">${restoring ? '恢复后，物品重新出现在普通库存中，并恢复对应的到期提醒。' : '归档后，物品从普通库存和到期提醒中隐藏。照片、数量、位置及历史记录保留，可以随时恢复。'}</p><div class="archive-preview"><strong>${esc(item.name)}</strong><span>物品 #${item.id} · ${number(item.quantity)} ${esc(item.unit)} · ${esc(STATUS[item.status])}</span><span>${esc(item.location_path)}</span></div><label class="form-field"><span class="field-label">${restoring ? '恢复备注' : '归档原因'}</span><textarea class="form-control" name="note" rows="2" maxlength="2000" placeholder="可选，记录这次操作的原因"></textarea></label><p class="help-text">点击下方按钮才会${restoring ? '恢复' : '归档'}这一件物品。</p><p class="error-banner form-error" hidden role="alert"></p></div><div class="modal-footer"><button class="button secondary" type="button" data-action="close-modal">取消</button><button class="button primary" type="submit">确认${restoring ? '恢复' : '归档'}</button></div></form>`);
+  } catch (error) { toast(error.message, true); }
+}
+async function submitArchive(form) {
+  const restoring = form.dataset.restoring === 'true';
+  const item = await post(`/api/items/${form.dataset.id}/${restoring ? 'restore' : 'archive'}`, {confirmed: true, note: String(new FormData(form).get('note') || '').trim()});
+  $('action-modal').close(); toast(restoring ? '物品已恢复。' : '物品已归档，可在“已归档”筛选中查看。'); await refreshAfterMutation();
+  if ($('detail-modal').open) await openDetail(item.id);
+}
+const DRAFT_LABELS = {name: '物品名称', category: '分类', location_path: '目标位置', quantity: '数量', unit: '单位', brand: '品牌', model: '型号', stored_date: '入库日期', purchase_date: '购买日期', purchase_price: '购买价格（元）', expires_on: '有效期至', warning_days: '提前提醒（天）', tags: '标签', notes: '物品备注', note: '操作备注', status: '状态'};
+function draftFields(draft) {
+  const payload = draft.payload || {};
+  return Object.entries(payload).filter(([key, value]) => DRAFT_LABELS[key] && value !== null && value !== '').map(([key, value]) => `<div><dt>${esc(key === 'quantity' && draft.action === 'restock' ? '补充数量' : DRAFT_LABELS[key])}</dt><dd>${esc(Array.isArray(value) ? value.join('、') : value)}</dd></div>`).join('');
+}
+function aiItemCard(item) {
+  return `<button type="button" class="ai-item-result" data-action="detail" data-id="${Number(item.id)}"><span><strong>${esc(item.name)}</strong><span>物品 #${number(item.id)} · ${number(item.quantity)} ${esc(item.unit)} · ${esc(STATUS[item.status] || item.status)}${archived(item) ? ' · 已归档' : ''}</span><span>${esc(item.location_path)}</span></span>${icon('chevron')}</button>`;
+}
+function aiDraftCard(draft) {
+  const titles = {create: '待确认登记', restock: '待确认补充', move: '待确认移库', archive: '待确认归档'};
+  const expired = new Date(draft.expires_at).getTime() <= Date.now();
+  const done = draft.state === 'confirmed' || draft.state === 'cancelled';
+  return `<div class="ai-draft${done ? ' ai-draft-done' : ''}"><div class="ai-draft-heading"><strong>${esc(titles[draft.action] || '待确认操作')}</strong><span>${done ? draft.state === 'confirmed' ? '已执行' : '已取消' : expired ? '已过期' : '尚未写入'}</span></div><p class="ai-plain">${esc(draft.summary)}</p>${(draft.items || []).map(aiItemCard).join('')}<dl class="ai-draft-fields">${draftFields(draft)}</dl>${draft.action === 'archive' ? '<p class="help-text">仅归档上方列出的物品。数量、位置和历史保留，之后可以恢复。</p>' : ''}${!done ? `<p class="help-text">${expired ? '草稿已过期，请重新向助手描述需求。' : '请检查这些信息。点击确认后才会写入，草稿 15 分钟内有效。'}</p><div class="ai-draft-actions"><button type="button" class="button primary button-small" data-action="ai-confirm" data-draft="${esc(draft.id)}"${expired || draft.pending ? ' disabled' : ''}>${draft.pending ? '正在处理…' : `确认${draft.action === 'archive' ? '归档' : draft.action === 'move' ? '移库' : draft.action === 'restock' ? '补充' : '登记'}`}</button><button type="button" class="button secondary button-small" data-action="ai-cancel" data-draft="${esc(draft.id)}"${draft.pending ? ' disabled' : ''}>取消</button></div>` : ''}</div>`;
+}
+function aiMessages() {
+  if (!state.ai.messages.length) return '<div class="ai-welcome"><strong>告诉我你收好了什么，或想找什么。</strong><p>例如：“我把两根数据线放进书房工具箱。”<br>或：“我的打气筒在哪里？”</p></div>';
+  return state.ai.messages.map(message => `<div class="ai-message ai-message-${message.role === 'user' ? 'user' : 'assistant'}"><span class="ai-speaker">${message.role === 'user' ? '你' : '收纳助手'}</span><p class="ai-plain">${esc(message.content)}</p>${message.matches?.length ? `<div class="ai-matches">${message.matches.map(aiItemCard).join('')}</div>` : ''}${message.drafts?.map(aiDraftCard).join('') || ''}</div>`).join('');
+}
+function aiPanel() {
+  const enabled = Boolean(state.ai.status?.enabled);
+  const recording = state.ai.recording === true;
+  const waiting = state.ai.busy || state.ai.transcribing || state.ai.recording === 'starting';
+  const microphone = window.isSecureContext && navigator.mediaDevices?.getUserMedia && window.MediaRecorder;
+  const voiceAvailable = enabled && state.ai.status?.voice_enabled && microphone;
+  const voiceHint = !window.isSecureContext ? '手机录音需要 HTTPS。当前地址可用手机键盘的语音输入，转成文字后发送。' : !microphone ? '当前浏览器不支持网页录音，请使用手机键盘的语音输入。' : !state.ai.status?.voice_enabled ? '配置语音识别模型后可使用录音；现在可以打字或用手机键盘语音输入。' : '录音后先核对识别文字，再点击发送。最多录音 2 分钟，文件不超过 10 MB。';
+  return `<section class="panel ai-panel" id="ai-panel" aria-labelledby="ai-panel-title"><div class="panel-header"><div><h2 class="panel-title" id="ai-panel-title">${icon('chat')} AI 收纳助手</h2><p class="panel-subtitle">问位置、记物品。每次写入，都由你确认。</p></div><button class="button subtle button-small" type="button" data-action="ai-help">${enabled ? '接入与隐私' : '如何启用'}</button></div><div class="ai-panel-body">${!enabled ? '<div class="ai-config-notice"><strong>助手尚未启用</strong><span>在 NAS 的 Compose 中配置 AI API 和模型后重建容器，普通物品管理仍然可用。</span></div>' : `<p class="ai-connection"><span class="connection-dot"></span> 已配置 · ${esc(state.ai.status.model || 'AI 模型')}</p>`}<div class="ai-messages" id="ai-messages" role="log" aria-label="与收纳助手的对话" aria-live="polite">${aiMessages()}</div>${waiting || recording ? `<p class="ai-progress" role="status">${recording ? `${icon('mic')} 正在录音，点击“停止并识别”结束…` : state.ai.transcribing ? '正在识别语音，完成后请核对文字…' : state.ai.recording === 'starting' ? '正在请求麦克风权限…' : '助手正在查询和整理…'}</p>` : ''}<form id="ai-form"><label class="screen-reader" for="ai-message">给 AI 收纳助手的消息</label><textarea class="form-control ai-input" id="ai-message" name="message" rows="2" maxlength="4000" placeholder="说说物品名称、数量和位置，或者问我东西在哪里…"${!enabled || waiting || recording ? ' disabled' : ''}>${esc(state.ai.input)}</textarea><div class="ai-compose-actions"><button class="button secondary" type="button" data-action="ai-record"${(!voiceAvailable || waiting) && !recording ? ' disabled' : ''}>${icon('mic')}${recording ? '停止并识别' : '语音输入'}</button><button class="button primary" type="submit"${!enabled || waiting || recording || !state.ai.input.trim() ? ' disabled' : ''}>${icon('arrow')} 发送</button></div></form><p class="help-text ai-voice-hint">${esc(voiceHint)}</p><p class="help-text ai-privacy-note">AI 接口会接收本次对话、录音及完成任务所需的档案信息；密钥留在 NAS 后端。助手只能读取档案和提交待确认操作，不能修改程序。</p></div></section>`;
+}
+function renderAI(focus = false) {
+  if (state.route !== 'dashboard' || !$('ai-panel')) return;
+  const previousScroll = $('ai-messages')?.scrollTop || 0;
+  $('ai-panel').outerHTML = aiPanel();
+  const messages = $('ai-messages'); if (messages) messages.scrollTop = focus ? messages.scrollHeight : previousScroll;
+  if (focus && !state.ai.busy && !state.ai.recording && !state.ai.transcribing) $('ai-message')?.focus({preventScroll: true});
+}
+function openAIHelp() {
+  openModal('ai-help-modal', `${modalHeader('AI 接入与使用', 'ai-help-modal-title')}<div class="modal-body ai-help"><p>在 NAS 的 Compose 环境变量中设置聊天 API，再重建 HomeStorage 容器：</p><dl><div><dt>AI_API_BASE_URL</dt><dd>你的 OpenAI 兼容 API 地址，通常以 /v1 结尾</dd></div><div><dt>AI_API_KEY</dt><dd>供应商提供的密钥，仅在 NAS 设置</dd></div><div><dt>AI_MODEL</dt><dd>支持工具调用的聊天模型名称</dd></div><div><dt>AI_TRANSCRIPTION_MODEL</dt><dd>语音识别模型名称，配置后启用录音</dd></div></dl><p class="help-text">语音可另设 AI_TRANSCRIPTION_BASE_URL 和 AI_TRANSCRIPTION_API_KEY。具体地址和模型以供应商文档为准。</p><h3>手机语音</h3><p>网页调用麦克风需要 HTTPS 和浏览器录音支持。可以为飞牛 NAS 配置 HTTPS 反向代理；在 HTTP 页面，使用手机键盘自带的语音输入也可以。</p><h3>每次写入由你确认</h3><p>登记、补充、移库和归档只生成草稿。检查列出的具体物品和信息，点击“确认”才保存；取消不会改变数据。助手不提供删除、代码修改、数据库命令或 NAS 操作权限。</p><h3>发送哪些信息</h3><p>对话、录音以及本次查询所需的物品和位置数据会发送到你配置的 API 服务。聊天只保存在当前页面内存中，退出登录或刷新页面会清空。</p></div><div class="modal-footer"><button class="button primary" data-action="close-modal">知道了</button></div>`);
+}
+async function submitAI(form) {
+  const message = String(new FormData(form).get('message') || '').trim();
+  if (!message || state.ai.busy || !state.ai.status?.enabled) return;
+  const generation = state.ai.generation;
+  const history = []; let remaining = 20000 - message.length;
+  for (const entry of state.ai.messages.filter(value => ['user', 'assistant'].includes(value.role)).slice(-12).reverse()) {
+    const content = String(entry.content).slice(0, Math.min(3000, remaining));
+    if (!content) break; history.unshift({role: entry.role, content}); remaining -= content.length;
+  }
+  state.ai.messages.push({role: 'user', content: message}); state.ai.input = ''; state.ai.busy = true; renderAI(true);
+  try {
+    const response = await post('/api/ai/chat', {message, history});
+    if (generation !== state.ai.generation) return;
+    state.ai.messages.push({role: 'assistant', content: response.reply || '已整理本次信息，请查看下方结果。', matches: Array.isArray(response.matches) ? response.matches : [], drafts: Array.isArray(response.drafts) ? response.drafts : []});
+  } catch (error) { if (generation === state.ai.generation) state.ai.messages.push({role: 'assistant', content: error.message}); }
+  finally { if (generation === state.ai.generation) { state.ai.busy = false; renderAI(true); } }
+}
+async function handleAIDraft(id, confirm) {
+  const draft = state.ai.messages.flatMap(message => message.drafts || []).find(value => value.id === id);
+  if (!draft || draft.pending || draft.state) return;
+  const generation = state.ai.generation;
+  draft.pending = true; renderAI();
+  try {
+    const result = await post(`/api/ai/drafts/${encodeURIComponent(id)}/${confirm ? 'confirm' : 'cancel'}`, confirm ? {confirmed: true} : {});
+    if (generation !== state.ai.generation) return;
+    draft.state = confirm ? 'confirmed' : 'cancelled';
+    if (confirm) { state.ai.messages.push({role: 'assistant', content: result.message || '已按你确认的信息保存。', matches: result.items || []}); await refreshAfterMutation(); }
+    else toast('草稿已取消，物品信息没有改变。');
+  } catch (error) { if (generation === state.ai.generation) { toast(error.message, true); state.ai.messages.push({role: 'assistant', content: error.message}); } }
+  finally { draft.pending = false; if (generation === state.ai.generation) renderAI(true); }
+}
+let aiRecorder = null;
+let aiRecordingTimer = null;
+let aiRecordingCancelled = false;
+function stopRecording(cancel = false) {
+  aiRecordingCancelled = aiRecordingCancelled || cancel;
+  if (aiRecorder?.state === 'recording') aiRecorder.stop();
+  else if (cancel) state.ai.recording = false;
+}
+async function toggleRecording() {
+  if (state.ai.recording === true) { stopRecording(); return; }
+  if (state.ai.recording || state.ai.busy || state.ai.transcribing) return;
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) { toast('网页录音需要 HTTPS。请先使用手机键盘的语音输入。', true); return; }
+  if (!state.ai.status?.voice_enabled) { openAIHelp(); return; }
+  const generation = state.ai.generation;
+  state.ai.recording = 'starting'; aiRecordingCancelled = false; renderAI();
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    if (generation !== state.ai.generation || state.route !== 'dashboard' || aiRecordingCancelled || $('app-shell').hidden) { stream.getTracks().forEach(track => track.stop()); state.ai.recording = false; return; }
+    const type = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm', 'audio/ogg;codecs=opus'].find(value => MediaRecorder.isTypeSupported(value));
+    const recorder = new MediaRecorder(stream, type ? {mimeType: type} : undefined); aiRecorder = recorder;
+    const chunks = []; let size = 0; let oversized = false;
+    recorder.addEventListener('dataavailable', event => {
+      if (!event.data.size) return;
+      size += event.data.size;
+      if (size > 10 * 1024 * 1024) { oversized = true; stopRecording(true); return; }
+      chunks.push(event.data);
+    });
+    recorder.addEventListener('error', () => { aiRecordingCancelled = true; toast('录音中断，请重新录音或使用键盘语音输入。', true); stopRecording(true); });
+    recorder.addEventListener('stop', async () => {
+      clearTimeout(aiRecordingTimer); aiRecordingTimer = null; stream.getTracks().forEach(track => track.stop()); aiRecorder = null; state.ai.recording = false;
+      if (oversized) toast('录音超过 10 MB，已取消，请缩短录音再试。', true);
+      if (generation !== state.ai.generation || aiRecordingCancelled || !chunks.length) { renderAI(); return; }
+      state.ai.transcribing = true; renderAI();
+      try {
+        const mime = recorder.mimeType || chunks[0].type || 'audio/webm'; const extension = mime.includes('mp4') ? 'm4a' : mime.includes('ogg') ? 'ogg' : 'webm';
+        const body = new FormData(); body.append('file', new Blob(chunks, {type: mime}), `recording.${extension}`);
+        const result = await api('/api/ai/transcribe', {method: 'POST', body});
+        if (generation !== state.ai.generation) return;
+        const transcript = String(result.text || '').trim(); if (!transcript) throw new Error('没有识别到文字，请重新录音。');
+        const combined = `${state.ai.input}${state.ai.input ? '\n' : ''}${transcript}`;
+        state.ai.input = combined.slice(0, 4000);
+        toast(combined.length > 4000 ? '识别文字超过 4000 字，已截断。请检查并分次发送。' : '已识别语音。请核对或修改文字，再点击发送。');
+      } catch (error) { if (generation === state.ai.generation) toast(error.message, true); }
+      finally { if (generation === state.ai.generation) { state.ai.transcribing = false; renderAI(true); } }
+    });
+    recorder.start(1000); state.ai.recording = true; aiRecordingTimer = setTimeout(() => stopRecording(), 120000); renderAI();
+  } catch (error) { stream?.getTracks().forEach(track => track.stop()); state.ai.recording = false; toast(error.name === 'NotAllowedError' ? '麦克风权限未开启。请允许录音，或使用手机键盘语音输入。' : '无法开始录音，请检查麦克风或使用手机键盘语音输入。', true); renderAI(); }
+}
+
+function showLogin() { stopRecording(true); state.ai.generation++; state.ai.busy = false; state.ai.transcribing = false; state.ai.messages = []; state.ai.input = ''; document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close()); $('app-shell').hidden = true; $('login-view').hidden = false; document.querySelector('#login-form input').focus(); }
 async function bootstrap() {
   try {
     const auth = await api('/api/auth'); state.authRequired = auth.auth_required;
     if (!auth.authenticated) { showLogin(); return; }
     $('app-shell').hidden = false; $('login-view').hidden = true;
-    const [meta, locations] = await Promise.all([api('/api/meta'), api('/api/locations')]);
-    state.categories = meta.categories; state.timezone = meta.timezone; state.locations = locations;
+    const [meta, locations, categories, aiStatus] = await Promise.all([api('/api/meta'), api('/api/locations'), api('/api/categories'), api('/api/ai/status').catch(() => ({enabled: false, voice_enabled: false}))]);
+    state.categories = categories; state.timezone = meta.timezone; state.locations = locations; state.ai.status = aiStatus;
     const deepLink = new URLSearchParams(location.search).get('location');
     if (deepLink && /^\d+$/.test(deepLink)) { state.filters.location_id = deepLink; state.selectedLocation = Number(deepLink); state.route = 'items'; history.replaceState(null, '', `${location.pathname}?location=${encodeURIComponent(deepLink)}#items`); }
     else state.route = ROUTES[location.hash.slice(1)] ? location.hash.slice(1) : 'dashboard';
     await refreshPage();
   } catch (error) { showError(error); setNavigation(); $('page-view').innerHTML = empty('暂时无法连接家庭档案', '请检查服务是否启动，再重新连接。', 'retry', '重新连接', 'refresh'); }
 }
-window.addEventListener('hashchange', () => { state.route = ROUTES[location.hash.slice(1)] ? location.hash.slice(1) : 'dashboard'; refreshPage(); });
+window.addEventListener('hashchange', () => { if (state.ai.recording) stopRecording(true); state.route = ROUTES[location.hash.slice(1)] ? location.hash.slice(1) : 'dashboard'; refreshPage(); });
 document.addEventListener('click', async event => {
   const target = event.target.closest('[data-action]'); if (!target || target.disabled) return;
   const action = target.dataset.action; const id = Number(target.dataset.id);
   if (action === 'close-modal') { target.closest('dialog')?.close(); return; }
+  if (action === 'add-category') { openCategoryForm(); return; }
+  if (action === 'edit-category') { openCategoryForm(id); return; }
+  if (action === 'delete-category') { confirmDeleteCategory(id); return; }
+  if (action === 'toggle-category') { const category = state.categories.find(cat => cat.id === id); if (!category) return; target.disabled = true; try { await api(`/api/categories/${id}`, {method: 'PATCH', body: JSON.stringify({active: !category.active})}); toast(category.active ? '分类已停用，已有物品保留。' : '分类已启用。'); await refreshAfterMutation(); } catch (error) { toast(error.message, true); } finally { target.disabled = false; } return; }
+  if (action === 'archive-item') { confirmArchive(id); return; }
+  if (action === 'restore-item') { confirmArchive(id, true); return; }
+  if (action === 'ai-help') { openAIHelp(); return; }
+  if (action === 'ai-record') { toggleRecording(); return; }
+  if (action === 'ai-confirm' || action === 'ai-cancel') { handleAIDraft(target.dataset.draft, action === 'ai-confirm'); return; }
   if (action === 'add-item') { openItemForm(); return; }
   if (action === 'edit-item') { openItemForm(id); return; }
   if (action === 'detail') { openDetail(id); return; }
@@ -262,11 +427,11 @@ document.addEventListener('click', async event => {
   if (action === 'edit-location') { openLocationForm(id); return; }
   if (action === 'delete-location') { confirmDeleteLocation(id); return; }
   if (action === 'select-location') { state.selectedLocation = id; renderLocations(); return; }
-  if (action === 'view-location-items') { state.filters = {q: '', category: '', status: '', location_id: String(id)}; navigate('items'); return; }
+  if (action === 'view-location-items') { state.filters = {q: '', category: '', category_id: '', status: '', location_id: String(id), archived: 'false'}; navigate('items'); return; }
   if (action === 'qr') { openQr(id); return; }
   if (action === 'print-qr') { window.print(); return; }
   if (action === 'expiry-tab') { state.expiry = target.dataset.value; refreshPage(); return; }
-  if (action === 'clear-filters') { state.filters = {q: '', category: '', status: '', location_id: ''}; history.replaceState(null, '', `${location.pathname}${location.hash}`); refreshPage(); return; }
+  if (action === 'clear-filters') { state.filters = {q: '', category: '', category_id: '', status: '', location_id: '', archived: 'false'}; history.replaceState(null, '', `${location.pathname}${location.hash}`); refreshPage(); return; }
   if (action === 'retry') { bootstrap(); return; }
   if (action === 'remove-photo') { const form = target.closest('form'); form.dataset.image = ''; form.querySelector('[name="photo"]').value = ''; $('image-preview').innerHTML = icon('image'); target.remove(); return; }
   if (action === 'export') {
@@ -276,9 +441,11 @@ document.addEventListener('click', async event => {
   }
   if (action === 'logout') { try { await post('/api/logout', {}); document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close()); showLogin(); $('login-form').reset(); } catch (error) { toast(error.message, true); } }
 });
+document.addEventListener('input', event => { if (event.target.id === 'ai-message') { state.ai.input = event.target.value; const send = $('ai-form')?.querySelector('[type="submit"]'); if (send) send.disabled = !state.ai.input.trim() || state.ai.busy; } });
+window.addEventListener('pagehide', () => stopRecording(true));
 document.addEventListener('change', event => {
   const target = event.target;
-  if (target.dataset.filter) { state.filters[target.dataset.filter] = target.value; refreshPage(); }
+  if (target.dataset.filter) { state.filters[target.dataset.filter] = target.value; if (target.dataset.filter === 'category_id') state.filters.category = ''; refreshPage(); }
   if (target.id === 'item-photo' && target.files[0]) {
     const file = target.files[0];
     if (file.size > 10 * 1024 * 1024) { target.value = ''; toast('照片超过 10 MB，请选择较小的文件。', true); return; }
@@ -289,6 +456,7 @@ document.addEventListener('change', event => {
 document.addEventListener('submit', async event => {
   const form = event.target; if (!(form instanceof HTMLFormElement)) return;
   event.preventDefault();
+  if (form.id === 'ai-form') { await submitAI(form); return; }
   if (form.id === 'search-form') {
     const query = String(new FormData(form).get('query') || '').trim(); state.filters.q = query;
     try { if (query) await post('/api/search', {query}); await refreshPage(); } catch (error) { toast(error.message, true); }
@@ -299,6 +467,9 @@ document.addEventListener('submit', async event => {
   form.dataset.saving = 'true'; if (button) button.disabled = true; if (errorElement) errorElement.hidden = true;
   try {
     if (form.id === 'login-form') { await post('/api/login', {password: new FormData(form).get('password')}); form.reset(); await bootstrap(); }
+    else if (form.id === 'category-form') await submitCategory(form);
+    else if (form.id === 'archive-form') await submitArchive(form);
+    else if (form.id === 'delete-category-form') { await api(`/api/categories/${form.dataset.id}`, {method: 'DELETE'}); $('category-modal').close(); toast('分类已删除。'); await refreshAfterMutation(); }
     else if (form.id === 'item-form') await submitItem(form);
     else if (form.id === 'action-form') await submitAction(form);
     else if (form.id === 'location-form') await submitLocation(form);
@@ -310,7 +481,7 @@ document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('c
 let refreshingReminders = false;
 async function refreshReminders() {
   if (refreshingReminders || document.visibilityState !== 'visible' || $('app-shell').hidden ||
-      !['dashboard', 'expiry'].includes(state.route) || document.querySelector('dialog[open]')) return;
+      !['dashboard', 'expiry'].includes(state.route) || document.querySelector('dialog[open]') || state.ai.busy || state.ai.recording || state.ai.transcribing || document.activeElement?.id === 'ai-message') return;
   refreshingReminders = true;
   try { await refreshPage(false); }
   finally { refreshingReminders = false; }

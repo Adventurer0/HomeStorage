@@ -24,15 +24,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, ValidationError, field_validator
 
-from .db import connect, initialize, transaction
+from .db import DEFAULT_CATEGORIES, connect, initialize, transaction
 
 
-CATEGORIES = [
-    "日常用品", "电子设备", "摄影器材", "工具耗材", "骑行用品", "健身用品",
-    "商品库存", "食品", "药品", "其他",
-]
+CATEGORIES = DEFAULT_CATEGORIES
 ACTIVE = {"in_stock", "in_use", "lent"}
 COOKIE_NAME = "homestorage_session"
 SESSION_SECONDS = 7 * 24 * 60 * 60
@@ -73,9 +70,26 @@ class LocationPatch(InputModel):
     parent_id: Annotated[StrictInt, Field(gt=0)] | None = None
 
 
+class CategoryCreate(InputModel):
+    name: str = Field(min_length=1, max_length=120)
+    sort_order: Annotated[StrictInt, Field(ge=-1_000_000, le=1_000_000)] | None = None
+
+
+class CategoryPatch(InputModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    sort_order: Annotated[StrictInt, Field(ge=-1_000_000, le=1_000_000)] | None = None
+    active: StrictBool | None = None
+
+
+class ArchiveInput(InputModel):
+    confirmed: StrictBool
+    note: str = Field(default="", max_length=2000)
+
+
 class ItemFields(InputModel):
     name: str = Field(min_length=1, max_length=200)
-    category: str = "其他"
+    category: str = Field(default="其他", min_length=1, max_length=120)
+    category_id: Annotated[StrictInt, Field(gt=0)] | None = None
     unit: str = Field(default="件", min_length=1, max_length=30)
     image_url: str | None = Field(default=None, max_length=2048)
     brand: str = Field(default="", max_length=120)
@@ -87,13 +101,6 @@ class ItemFields(InputModel):
     purchase_price: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     expires_on: date | None = None
     warning_days: WarningDays = 7
-
-    @field_validator("category")
-    @classmethod
-    def known_category(cls, value):
-        if value not in CATEGORIES:
-            raise ValueError("请选择有效分类")
-        return value
 
     @field_validator("image_url")
     @classmethod
@@ -115,7 +122,8 @@ class ItemCreate(ItemFields):
 
 class ItemPatch(InputModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
-    category: str | None = None
+    category: str | None = Field(default=None, min_length=1, max_length=120)
+    category_id: Annotated[StrictInt, Field(gt=0)] | None = None
     unit: str | None = Field(default=None, min_length=1, max_length=30)
     image_url: str | None = Field(default=None, max_length=2048)
     brand: str | None = Field(default=None, max_length=120)
@@ -147,7 +155,7 @@ def fail(message: str, status=400):
 def require_row(connection, table, row_id):
     row = connection.execute(f"SELECT * FROM {table} WHERE id = ?", (row_id,)).fetchone()
     if row is None:
-        fail("位置不存在" if table == "locations" else "物品不存在", 404)
+        fail({"locations": "位置不存在", "categories": "分类不存在"}.get(table, "物品不存在"), 404)
     return row
 
 
@@ -180,7 +188,7 @@ def serialize_location(connection, location_id):
     tree = location_tree(connection)
     ids = descendants(tree, location_id)
     count = sum(
-        1 for row in connection.execute("SELECT location_id, status FROM items")
+        1 for row in connection.execute("SELECT location_id, status FROM items WHERE archived_at IS NULL")
         if row["location_id"] in ids and row["status"] in ACTIVE
     )
     return {**tree[location_id], "item_count": count}
@@ -196,6 +204,31 @@ def serialize_item(row, tree, today):
         else "soon" if remaining <= item["warning_days"] else "safe"
     )
     return item
+
+
+def list_categories(connection):
+    return [
+        {**dict(row), "active": bool(row["active"])}
+        for row in connection.execute(
+            "SELECT categories.*,COUNT(items.id) AS item_count FROM categories "
+            "LEFT JOIN items ON items.category_id=categories.id "
+            "GROUP BY categories.id ORDER BY categories.sort_order,categories.id"
+        )
+    ]
+
+
+def resolve_category(connection, *, category_id=None, name=None, current_id=None):
+    if category_id is not None:
+        row = require_row(connection, "categories", category_id)
+        if name is not None and name != row["name"]:
+            fail("分类名称与分类编号不一致", 422)
+    else:
+        row = connection.execute("SELECT * FROM categories WHERE name=?", (name or "其他",)).fetchone()
+        if row is None:
+            fail("请选择有效分类", 422)
+    if not row["active"] and row["id"] != current_id:
+        fail("该分类已停用，请选择其他分类", 409)
+    return dict(row)
 
 
 def audit(connection, action, *, item=None, source=None, destination=None, delta=0, note=""):
@@ -270,7 +303,7 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
         application.state.session_key = hmac.digest(key, configured_password.encode("utf-8"), "sha256")
         yield
 
-    application = FastAPI(title="HomeStorage", version="1.0.0", lifespan=lifespan)
+    application = FastAPI(title="HomeStorage", version="2.0.0", lifespan=lifespan)
     application.state.data_dir = data_path
     application.state.db_path = data_path / "homestorage.sqlite3"
 
@@ -357,14 +390,65 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
         return response
 
     @application.get("/api/meta")
-    def meta():
-        return {"categories": CATEGORIES, "timezone": timezone_name}
+    def meta(database: Database):
+        return {"categories": [row["name"] for row in list_categories(database) if row["active"]], "timezone": timezone_name}
+
+    @application.get("/api/categories")
+    def categories(database: Database):
+        return list_categories(database)
+
+    @application.post("/api/categories", status_code=201)
+    def create_category(body: CategoryCreate, database: Database):
+        with transaction(database):
+            order = body.sort_order
+            if order is None:
+                order = database.execute("SELECT COALESCE(MAX(sort_order),-1)+1 FROM categories").fetchone()[0]
+            try:
+                cursor = database.execute("INSERT INTO categories(name,sort_order) VALUES (?,?)", (body.name, order))
+            except sqlite3.IntegrityError:
+                fail("分类名称已存在", 409)
+            audit(database, "category_create", note=json.dumps({"id": cursor.lastrowid, "name": body.name}, ensure_ascii=False))
+            result = next(row for row in list_categories(database) if row["id"] == cursor.lastrowid)
+        return result
+
+    @application.patch("/api/categories/{category_id}")
+    def update_category(category_id: int, body: CategoryPatch, database: Database):
+        changes = body.model_dump(exclude_unset=True)
+        if any(value is None for value in changes.values()):
+            fail("分类信息不能设为空值", 422)
+        with transaction(database):
+            original = dict(require_row(database, "categories", category_id))
+            if changes:
+                try:
+                    assignments = ",".join(f"{key}=?" for key in changes)
+                    database.execute(f"UPDATE categories SET {assignments} WHERE id=?", (*changes.values(), category_id))
+                except sqlite3.IntegrityError:
+                    fail("分类名称已存在", 409)
+                if "name" in changes and changes["name"] != original["name"]:
+                    database.execute(
+                        "UPDATE items SET category=?,updated_at=? WHERE category_id=?", (changes["name"], now(), category_id)
+                    )
+                audit(database, "category_update", note=json.dumps(
+                    {"id": category_id, "before": original, "changes": changes}, ensure_ascii=False
+                ))
+            result = next(row for row in list_categories(database) if row["id"] == category_id)
+        return result
+
+    @application.delete("/api/categories/{category_id}")
+    def delete_category(category_id: int, database: Database):
+        with transaction(database):
+            original = dict(require_row(database, "categories", category_id))
+            if database.execute("SELECT 1 FROM items WHERE category_id=? LIMIT 1", (category_id,)).fetchone():
+                fail("该分类仍有关联物品（包括已归档物品），请先调整分类", 409)
+            database.execute("DELETE FROM categories WHERE id=?", (category_id,))
+            audit(database, "category_delete", note=json.dumps(original, ensure_ascii=False))
+        return {"ok": True}
 
     @application.get("/api/locations")
     def locations(database: Database):
         tree = location_tree(database)
         quantities = {}
-        for item in database.execute("SELECT location_id, status FROM items"):
+        for item in database.execute("SELECT location_id, status FROM items WHERE archived_at IS NULL"):
             if item["status"] in ACTIVE:
                 quantities[item["location_id"]] = quantities.get(item["location_id"], 0) + 1
         return [
@@ -432,10 +516,11 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
         ).save(output)
         return Response(output.getvalue(), media_type="image/svg+xml")
 
-    def all_items(database):
+    def all_items(database, include_archived=False):
         tree = location_tree(database)
         calendar_day = today()
-        return [serialize_item(row, tree, calendar_day) for row in database.execute("SELECT * FROM items ORDER BY id DESC")]
+        where = "" if include_archived else " WHERE archived_at IS NULL"
+        return [serialize_item(row, tree, calendar_day) for row in database.execute(f"SELECT * FROM items{where} ORDER BY id DESC")]
 
     def matched(items, query):
         terms = query.casefold().split()
@@ -448,13 +533,19 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
     def items(
         database: Database, q: str = Query(default="", max_length=200), location_id: int | None = None,
         category: str | None = None, status: str | None = None, expiry: Literal["soon", "expired"] | None = None,
+        category_id: int | None = None, archived: Literal["false", "true", "all"] = "false",
     ):
-        result = matched(all_items(database), q)
+        result = matched(all_items(database, include_archived=archived != "false"), q)
+        if archived == "true":
+            result = [item for item in result if item["archived_at"] is not None]
         if location_id is not None:
             valid_ids = descendants(location_tree(database), location_id)
             result = [item for item in result if item["location_id"] in valid_ids]
         if category:
             result = [item for item in result if item["category"] == category]
+        if category_id is not None:
+            require_row(database, "categories", category_id)
+            result = [item for item in result if item["category_id"] == category_id]
         if status:
             result = [item for item in result if item["status"] == status]
         if expiry:
@@ -468,20 +559,28 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
             audit(database, "search", note=body.query)
         return {"count": len(result)}
 
-    @application.post("/api/items", status_code=201)
-    def create_item(body: ItemCreate, database: Database):
+    def create_item_data(body: ItemCreate, database, *, audit_note=""):
         values = body.model_dump(mode="json")
         values["stored_date"] = values["stored_date"] or today().isoformat()
         values.update(status="in_stock" if body.quantity else "depleted", created_at=now(), updated_at=now())
         with transaction(database):
             require_row(database, "locations", body.location_id)
+            selected = resolve_category(
+                database, category_id=body.category_id,
+                name=body.category if "category" in body.model_fields_set or body.category_id is None else None,
+            )
+            values.update(category_id=selected["id"], category=selected["name"])
             keys = ",".join(values)
             placeholders = ",".join("?" for _ in values)
             cursor = database.execute(f"INSERT INTO items ({keys}) VALUES ({placeholders})", tuple(values.values()))
             tree = location_tree(database)
             result = serialize_item(require_row(database, "items", cursor.lastrowid), tree, today())
-            audit(database, "create", item=result, destination=result["location_path"], delta=result["quantity"])
+            audit(database, "create", item=result, destination=result["location_path"], delta=result["quantity"], note=audit_note)
         return result
+
+    @application.post("/api/items", status_code=201)
+    def create_item(body: ItemCreate, database: Database):
+        return create_item_data(body, database)
 
     @application.get("/api/items/{item_id}")
     def item(item_id: int, database: Database):
@@ -495,6 +594,12 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
             fail("必填物品信息不能设为空值", 422)
         with transaction(database):
             original = dict(require_row(database, "items", item_id))
+            if "category" in changes or "category_id" in changes:
+                selected = resolve_category(
+                    database, category_id=changes.get("category_id"), name=changes.get("category"),
+                    current_id=original["category_id"],
+                )
+                changes.update(category_id=selected["id"], category=selected["name"])
             # Reuse the full metadata validators after merging an optional patch.
             metadata = {key: value for key, value in original.items() if key in ItemFields.model_fields}
             try:
@@ -517,6 +622,8 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
     def item_action(item_id: int, body: ActionInput, database: Database):
         with transaction(database):
             original = dict(require_row(database, "items", item_id))
+            if original["archived_at"] is not None:
+                fail("物品已归档，请先恢复再操作库存", 409)
             status, quantity, location = original["status"], original["quantity"], original["location_id"]
             action = body.action
             allowed = {
@@ -568,6 +675,36 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
             )
             result = serialize_item(require_row(database, "items", item_id), tree, today())
         return result
+
+    def change_archive(database, item_id, note="", *, restore=False):
+        with transaction(database):
+            original = dict(require_row(database, "items", item_id))
+            if restore and original["archived_at"] is None:
+                fail("该物品未归档，无需恢复", 409)
+            if not restore and original["archived_at"] is not None:
+                fail("该物品已归档", 409)
+            timestamp = now()
+            database.execute(
+                "UPDATE items SET archived_at=?,updated_at=? WHERE id=?",
+                (None if restore else timestamp, timestamp, item_id),
+            )
+            tree = location_tree(database)
+            path = tree[original["location_id"]]["path"]
+            audit(database, "restore" if restore else "archive", item=original, source=path, destination=path, note=note)
+            result = serialize_item(require_row(database, "items", item_id), tree, today())
+        return result
+
+    @application.post("/api/items/{item_id}/archive")
+    def archive_item(item_id: int, body: ArchiveInput, database: Database):
+        if body.confirmed is not True:
+            fail("归档需要用户明确确认")
+        return change_archive(database, item_id, body.note)
+
+    @application.post("/api/items/{item_id}/restore")
+    def restore_item(item_id: int, body: ArchiveInput, database: Database):
+        if body.confirmed is not True:
+            fail("恢复需要用户明确确认")
+        return change_archive(database, item_id, body.note, restore=True)
 
     @application.get("/api/logs")
     def logs(database: Database, item_id: int | None = None, limit: int = Query(default=100, ge=1, le=500)):
@@ -634,8 +771,8 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
         database.execute("BEGIN")
         try:
             result = {
-                "version": 1, "exported_at": now(), "locations": locations(database),
-                "items": all_items(database),
+                "version": 2, "exported_at": now(), "locations": locations(database),
+                "categories": list_categories(database), "items": all_items(database, include_archived=True),
                 "logs": [dict(row) for row in database.execute("SELECT * FROM logs ORDER BY id")],
             }
         finally:
@@ -654,6 +791,39 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
     @application.get("/", include_in_schema=False)
     def index():
         return FileResponse(STATIC_DIR / "index.html")
+
+    def validated_payload(model, payload):
+        try:
+            return model.model_validate(payload)
+        except ValidationError:
+            fail("参数格式或取值不正确，请检查填写内容", 422)
+
+    def ai_actor(request):
+        if not configured_password:
+            return None
+        token = request.cookies.get(COOKIE_NAME, "")
+        return hashlib.sha256(token.encode()).hexdigest() if token else None
+
+    # Keep AI within the same validated and audited data operations as the UI.
+    # No database path, filesystem, shell, or configuration operations are tools.
+    from .ai import build_ai_router
+    application.include_router(build_ai_router({
+        "connect": lambda: connect(application.state.db_path),
+        "today": today,
+        "list_categories": list_categories,
+        "list_locations": locations,
+        "find_items": lambda database, query, include_archived=False: matched(
+            all_items(database, include_archived=include_archived), query
+        ),
+        "read_item": lambda database, item_id: item(item_id, database),
+        "create_item": lambda database, payload: create_item_data(
+            validated_payload(ItemCreate, payload), database, audit_note="AI 草稿经用户确认录入"
+        ),
+        "item_action": lambda database, item_id, payload: item_action(item_id, validated_payload(ActionInput, payload), database),
+        "archive_item": lambda database, item_id, note: change_archive(database, item_id, note),
+        "actor": ai_actor,
+        "timezone": timezone_name,
+    }))
 
     application.mount("/static", StaticFiles(directory=STATIC_DIR, check_dir=False), name="static")
     return application

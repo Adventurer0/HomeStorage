@@ -1,12 +1,28 @@
 """SQLite storage, kept on the NAS's local persistent data volume."""
 
 import sqlite3
+import secrets
 from contextlib import closing
 from contextlib import contextmanager
 from pathlib import Path
 
 
+DEFAULT_CATEGORIES = [
+    "日常用品", "电子设备", "摄影器材", "工具耗材", "骑行用品", "健身用品",
+    "商品库存", "食品", "药品", "其他",
+]
+
+
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    name TEXT PRIMARY KEY
+);
+CREATE TABLE IF NOT EXISTS categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1))
+);
 CREATE TABLE IF NOT EXISTS locations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -18,6 +34,7 @@ CREATE TABLE IF NOT EXISTS items (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     category TEXT NOT NULL DEFAULT '其他',
+    category_id INTEGER REFERENCES categories(id) ON DELETE RESTRICT,
     location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE RESTRICT,
     quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity >= 0),
     unit TEXT NOT NULL DEFAULT '件',
@@ -35,7 +52,8 @@ CREATE TABLE IF NOT EXISTS items (
         status IN ('in_stock', 'in_use', 'lent', 'depleted', 'discarded', 'lost')
     ),
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    archived_at TEXT
 );
 CREATE TABLE IF NOT EXISTS logs (
     id INTEGER PRIMARY KEY,
@@ -70,10 +88,48 @@ def initialize(path: Path) -> None:
             connection.execute("PRAGMA journal_mode=DELETE")
             connection.executescript(SCHEMA)
             migrate_location_ids(connection)
+            migrate_categories_and_archive(connection)
             if not connection.execute("SELECT 1 FROM locations LIMIT 1").fetchone():
                 connection.execute(
                     "INSERT INTO locations (name, type) VALUES (?, ?)", ("家", "home")
                 )
+
+
+def migrate_categories_and_archive(connection: sqlite3.Connection) -> None:
+    """Add stable category identities and archive state without rebuilding item data."""
+    with transaction(connection):
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(items)")}
+        if "category_id" not in columns:
+            connection.execute(
+                "ALTER TABLE items ADD COLUMN category_id INTEGER REFERENCES categories(id) ON DELETE RESTRICT"
+            )
+        if "archived_at" not in columns:
+            connection.execute("ALTER TABLE items ADD COLUMN archived_at TEXT")
+        if not connection.execute(
+            "SELECT 1 FROM schema_migrations WHERE name='categories_archive_v2'"
+        ).fetchone():
+            for index, name in enumerate(DEFAULT_CATEGORIES):
+                connection.execute(
+                    "INSERT OR IGNORE INTO categories(name,sort_order) VALUES (?,?)", (name, index)
+                )
+            connection.execute("INSERT INTO schema_migrations(name) VALUES ('categories_archive_v2')")
+        # Also recover unassigned legacy rows from supported backups. Existing IDs,
+        # statuses, quantities, timestamps, photos and audit records stay untouched.
+        legacy = connection.execute(
+            "SELECT DISTINCT category FROM items WHERE category_id IS NULL ORDER BY category"
+        ).fetchall()
+        for row in legacy:
+            name = row["category"]
+            connection.execute(
+                "INSERT OR IGNORE INTO categories(name,sort_order) VALUES (?, "
+                "(SELECT COALESCE(MAX(sort_order),-1)+1 FROM categories))", (name,)
+            )
+            category_id = connection.execute("SELECT id FROM categories WHERE name=?", (name,)).fetchone()[0]
+            connection.execute("UPDATE items SET category_id=? WHERE category_id IS NULL AND category=?", (category_id, name))
+        connection.execute("CREATE INDEX IF NOT EXISTS items_category ON items(category_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS items_archived ON items(archived_at)")
+        if connection.execute("PRAGMA foreign_key_check").fetchone():
+            raise RuntimeError("物品数据库迁移失败：已有数据存在无效关联")
 
 
 def migrate_location_ids(connection: sqlite3.Connection) -> None:
@@ -111,7 +167,19 @@ def migrate_location_ids(connection: sqlite3.Connection) -> None:
 
 @contextmanager
 def transaction(connection: sqlite3.Connection):
-    """Validate and mutate together; failed actions must not leave audit records."""
+    """Nest via savepoints so a confirmed AI batch and its used marker are atomic."""
+    if connection.in_transaction:
+        savepoint = "nested_" + secrets.token_hex(8)
+        connection.execute(f"SAVEPOINT {savepoint}")
+        try:
+            yield
+        except BaseException:
+            connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
+        else:
+            connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+        return
     connection.execute("BEGIN IMMEDIATE")
     try:
         yield

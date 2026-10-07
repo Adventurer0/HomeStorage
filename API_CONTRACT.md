@@ -1,4 +1,10 @@
-# HomeStorage v1 API
+# HomeStorage API
+
+Category identities, archives and restricted AI endpoints are documented in
+[FEATURES_V2.md](FEATURES_V2.md). The endpoints below remain compatible with v1.
+Items additionally return `category_id` and nullable `archived_at`; default inventory
+queries, location counts and expiry reminders omit archives. JSON export version 2
+includes all items and categories.
 
 Same-origin JSON API. Errors use HTTP status and `{"detail":"中文消息"}`.
 Dates are YYYY-MM-DD; timestamps ISO 8601 UTC. Expiry is calculated using
@@ -8,7 +14,8 @@ No inventory demo data is inserted. Initial location: 家 (type home).
 - GET /api/auth → `{authenticated, auth_required}`. Cookie auth when
   HOME_STORAGE_PASSWORD is set; passwordless local development otherwise.
 - POST /api/login `{password}`; POST /api/logout. POST requests require same-origin.
-- GET /api/meta → `{categories:["日常用品","电子设备","摄影器材","工具耗材","骑行用品","健身用品","商品库存","食品","药品","其他"], timezone}`.
+- GET /api/meta → `{categories:[<active category names>], timezone}`.
+  Names reflect user-defined categories; use /api/categories for stable IDs.
 - GET /api/locations → flat array of `{id,name,code,type,parent_id,path,item_count}`.
   Types: home, room, shelf, drawer, box, other. `path` is names joined with ` / `;
   item_count counts active items in this location and descendants.
@@ -17,7 +24,7 @@ No inventory demo data is inserted. Initial location: 家 (type home).
 - DELETE /api/locations/{id}: reject if it has children or ANY linked item.
 - GET /api/locations/{id}/qr?base_url=<browser-origin> → SVG encoding
   `<base_url>/?location=<id>`; validate http(s) origin, no path. Printable by browser.
-- GET /api/items?q=&location_id=&category=&status=&expiry= → array of items.
+- GET /api/items?q=&location_id=&category=&category_id=&status=&expiry=&archived=false → array of items.
   location_id includes descendants; expiry values soon,expired. Search logs record
   explicit queries via POST /api/search `{query}` (returns `{count}`), not GETs.
 - POST /api/items → item. Fields: name(required), category(default 其他),
@@ -47,7 +54,7 @@ No inventory demo data is inserted. Initial location: 家 (type home).
   record location path snapshots and item name snapshots; mutation and log in one transaction.
 - POST /api/uploads multipart `file` → `{image_url:"/uploads/<random-name>.jpg"}`.
   Validate JPEG/PNG/WebP actual content, 10 MB max. Authenticated file serving.
-- GET /api/export → downloadable JSON `{version,exported_at,locations,items,logs}`;
+- GET /api/export → downloadable JSON `{version,exported_at,categories,locations,items,logs}`;
   images excluded. Backup whole data folder after stopping container to include photos.
 - GET /health → `{status:"ok"}` checks SQLite, auth exempt.
 
