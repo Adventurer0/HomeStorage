@@ -41,10 +41,15 @@ atomically mutation+mark-used; retries/conflicts cannot duplicate writes; schema
 again. POST /api/ai/drafts/{id}/cancel -> {ok:true}; binding enforced.
 POST /api/ai/transcribe multipart file -> {text}; supported recorded audio <=10MB,
 provider transcription API. No audio stored persistently. User reviews transcript.
-Env AI_API_BASE_URL (default https://api.openai.com/v1), AI_API_KEY, AI_MODEL;
-AI_TRANSCRIPTION_MODEL optional: voice enabled only when set; optional AI_TRANSCRIPTION_
-BASE_URL and AI_TRANSCRIPTION_API_KEY fall back chat settings. HTTPS verified,
-credentials stay backend. Provider HTTP errors return safe Chinese messages, no raw bodies.
+AI connection settings can be saved live through authenticated GET/PATCH /api/settings/ai;
+see [AI_SETTINGS_CONTRACT.md](AI_SETTINGS_CONTRACT.md). Before the first web save, legacy
+AI_API_BASE_URL (default https://api.openai.com/v1), AI_API_KEY, AI_MODEL and optional
+AI_TRANSCRIPTION_MODEL/BASE_URL/API_KEY initialize defaults. Once saved, SQLite is
+authoritative. Each chat/transcription request uses one configuration snapshot, so new
+requests immediately use saved values without changing in-flight provider calls.
+Voice requires a transcription model; optional separate URL/key fall back to chat.
+HTTPS verified, credentials stay backend. Provider HTTP errors return safe Chinese
+messages, no raw bodies. Neither settings nor credentials are provider tools or export data.
 
 ## Frontend
 

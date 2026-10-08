@@ -37,9 +37,12 @@ const number = value => Number(value || 0).toLocaleString('zh-CN');
 const STATUS = {in_stock: '在库', in_use: '使用中', lent: '已借出', depleted: '已用完', discarded: '已丢弃', lost: '已遗失'};
 const ACTION = {create: '登记物品', item_create: '登记物品', update: '编辑档案', item_update: '编辑档案', move: '移动位置', take_out: '取出使用', return: '归还入库', lend: '借出物品', consume: '消耗库存', restock: '补充库存', discard: '丢弃物品', lost: '标记遗失', location_create: '新增位置', location_update: '编辑位置', location_delete: '删除位置', search: '搜索物品', archive: '归档物品', restore: '恢复物品', category_create: '新增分类', category_update: '编辑分类', category_delete: '删除分类'};
 const LOCATION_TYPES = {home: '家庭', room: '房间', shelf: '货架 / 柜子', drawer: '抽屉', box: '收纳箱', other: '其他'};
-const ROUTES = {dashboard: ['家庭概览', '好好收纳，也好好生活。', 'grid', '概览'], items: ['物品档案', '找得到，用得好。每件物品都有迹可循。', 'box', '物品'], locations: ['收纳空间', '从房间到收纳箱，把家的每个角落串起来。', 'pin', '位置'], expiry: ['到期提醒', '提前看一眼，少一点浪费，多一点安心。', 'clock', '到期'], categories: ['分类管理', '按家里的习惯分类，让每一件物品都好找。', 'tags', '分类'], history: ['操作记录', '每一次取放、移动与补充，都有记录。', 'history', '记录'], settings: ['应用设置', '更新由你决定，家庭档案安心保留。', 'settings', '设置']};
+const ROUTES = {dashboard: ['家庭概览', '好好收纳，也好好生活。', 'grid', '概览'], items: ['物品档案', '找得到，用得好。每件物品都有迹可循。', 'box', '物品'], locations: ['收纳空间', '从房间到收纳箱，把家的每个角落串起来。', 'pin', '位置'], expiry: ['到期提醒', '提前看一眼，少一点浪费，多一点安心。', 'clock', '到期'], categories: ['分类管理', '按家里的习惯分类，让每一件物品都好找。', 'tags', '分类'], history: ['操作记录', '每一次取放、移动与补充，都有记录。', 'history', '记录'], settings: ['应用设置', '配置收纳助手，选择程序更新时间。', 'settings', '设置']};
 const state = {route: 'dashboard', locations: [], categories: [], items: [], dashboard: null, logs: [], timezone: 'Asia/Shanghai', appVersion: '', updates: {status: null, preference: null, busy: false, polling: false, generation: 0, sequence: 0, inFlight: false, offline: false, disconnectedSince: null, reauthenticate: false, error: '', savedMessage: '', needsReload: false}, ai: {status: null, messages: [], input: '', generation: 0, busy: false, recording: false, transcribing: false}, filters: {q: '', location_id: '', category: '', category_id: '', status: '', archived: 'false'}, expiry: 'soon', selectedLocation: null, detail: null, authRequired: false, renderToken: 0};
 const $ = id => document.getElementById(id);
+state.aiSettings = {status: null, loading: false, busy: false, forbidden: false, generation: 0, sequence: 0, error: '', message: ''};
+// Retain the live form when navigating; keys exist only in password inputs.
+let aiSettingsPanel = null;
 
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
@@ -170,8 +173,149 @@ function renderUpdateNotice() {
   if (notice.hidden) return;
   notice.innerHTML = `<span>${icon(state.updates.needsReload ? 'check' : 'refresh')}<span>${esc(state.updates.needsReload ? '新版已就绪，刷新页面即可使用。' : updatePhaseText())}</span></span><button class="button secondary button-small" data-action="${state.updates.needsReload ? 'update-reload' : 'update-settings'}">${state.updates.needsReload ? '刷新使用新版' : '查看更新'}</button>`;
 }
+const AI_SETTINGS_FIELDS = ['api_base_url', 'model', 'transcription_model', 'transcription_base_url'];
+function aiConfigurationBusy() { return state.ai.busy || state.ai.transcribing || Boolean(state.ai.recording); }
+function aiSettingsForm() { return aiSettingsPanel?.querySelector('#ai-settings-form'); }
+function aiSettingsDirty() {
+  const form = aiSettingsForm(), status = state.aiSettings.status;
+  if (!form || !status) return false;
+  return AI_SETTINGS_FIELDS.some(name => form.elements[name].value.trim() !== String(status[name] || '')) ||
+    Boolean(form.elements.api_key.value || form.elements.transcription_api_key.value || form.elements.clear_api_key.checked || form.elements.clear_transcription_api_key.checked);
+}
+function acceptAISettings(status) {
+  state.aiSettings.status = {
+    ...Object.fromEntries(AI_SETTINGS_FIELDS.map(name => [name, typeof status[name] === 'string' ? status[name] : ''])),
+    api_key_set: status.api_key_set === true, transcription_api_key_set: status.transcription_api_key_set === true,
+    enabled: status.enabled === true, voice_enabled: status.voice_enabled === true,
+    source: status.source === 'web' ? 'web' : 'environment',
+  };
+}
+function setAISettingsValues() {
+  const form = aiSettingsForm(), status = state.aiSettings.status;
+  if (!form || !status) return;
+  AI_SETTINGS_FIELDS.forEach(name => { form.elements[name].value = status[name]; });
+}
+function renderAISettings() {
+  if (state.route !== 'settings' || $('app-shell').hidden || !$('ai-settings-mount')) return;
+  const settings = state.aiSettings;
+  if (!aiSettingsPanel) {
+    aiSettingsPanel = document.createElement('section');
+    aiSettingsPanel.className = 'panel ai-settings-panel';
+    aiSettingsPanel.setAttribute('aria-labelledby', 'ai-settings-title');
+    aiSettingsPanel.innerHTML = `<div class="panel-header"><div><h2 class="panel-title" id="ai-settings-title">${icon('chat')} AI 与语音</h2><p class="panel-subtitle">填写供应商的地址、密钥和模型，保存后立即生效。</p></div><span class="status-chip" id="ai-settings-connection">正在读取…</span></div><div class="panel-body"><div class="ai-settings-unavailable update-unavailable" id="ai-settings-unavailable" hidden role="status"><strong>请先设置登录密码</strong><p>为了保护 API 密钥，网页配置需要启用 HomeStorage 登录密码。在 NAS 的 Compose 中设置一次登录密码后，即可在这里配置 AI；已有的 AI 配置仍可使用。</p></div><p class="error-banner" id="ai-settings-error" hidden role="alert"></p><form id="ai-settings-form" autocomplete="off"><fieldset id="ai-settings-fields"><div class="ai-settings-columns"><section class="ai-settings-group" aria-labelledby="ai-chat-settings-title"><h3 id="ai-chat-settings-title">文字聊天</h3><p>选择支持工具调用的 OpenAI 兼容模型。</p><label class="form-field"><span class="field-label">聊天 API 地址</span><input class="form-control" name="api_base_url" type="url" inputmode="url" spellcheck="false" maxlength="2048" placeholder="https://api.example.com/v1"><span class="help-text">通常以 /v1 结尾，以供应商文档为准。</span></label><label class="form-field"><span class="field-label">聊天模型名称</span><input class="form-control" name="model" type="text" spellcheck="false" maxlength="256" placeholder="供应商提供的模型名称"><span class="help-text">模型需要支持工具调用；留空可停用助手。</span></label><label class="form-field"><span class="field-label">聊天 API 密钥</span><input class="form-control" name="api_key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="填写供应商提供的密钥"><span class="help-text" id="ai-chat-key-status"></span></label><label class="ai-key-clear"><input type="checkbox" name="clear_api_key"><span>保存时移除聊天密钥，停用助手及录音</span></label></section><section class="ai-settings-group" aria-labelledby="ai-voice-settings-title"><h3 id="ai-voice-settings-title">语音识别 <span>可选</span></h3><p>识别后先核对文字，再发送给助手。</p><label class="form-field"><span class="field-label">语音识别模型名称</span><input class="form-control" name="transcription_model" type="text" spellcheck="false" maxlength="256" placeholder="供应商提供的语音模型名称"><span class="help-text">留空关闭录音，仍可使用文字聊天。</span></label><label class="form-field"><span class="field-label">语音 API 地址</span><input class="form-control" name="transcription_base_url" type="url" inputmode="url" spellcheck="false" maxlength="2048" placeholder="留空使用聊天 API 地址"><span class="help-text">单独使用语音服务时填写，否则留空。</span></label><label class="form-field"><span class="field-label">语音 API 密钥</span><input class="form-control" name="transcription_api_key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="首次留空使用聊天密钥"><span class="help-text" id="ai-voice-key-status"></span></label><label class="ai-key-clear"><input type="checkbox" name="clear_transcription_api_key"><span>保存时移除独立语音密钥，改用聊天密钥</span></label></section></div><div class="ai-settings-privacy">${icon('shield')}<p>密钥保存在 NAS，保存后不会在网页显示。对话、录音及查询所需的档案信息会发送到你配置的 API 服务。AI 写入和归档物品仍需你确认。</p></div><p class="help-text ai-settings-microphone">网页录音需要 HTTPS 和麦克风权限；也可使用手机键盘的语音输入。</p><div class="ai-settings-footer"><span id="ai-settings-save-status" role="status"></span><button class="button primary" type="submit">${icon('check')} 保存配置</button></div></fieldset></form><button class="button subtle button-small ai-settings-retry" type="button" data-action="ai-settings-retry" hidden>重新读取配置</button></div>`;
+    setAISettingsValues();
+  }
+  const mount = $('ai-settings-mount');
+  if (aiSettingsPanel.parentElement !== mount) mount.replaceChildren(aiSettingsPanel);
+  const form = aiSettingsForm(), status = settings.status;
+  const find = selector => aiSettingsPanel.querySelector(selector);
+  const pending = settings.loading && !status || settings.busy;
+  const assistantBusy = aiConfigurationBusy();
+  find('#ai-settings-connection').textContent = status?.enabled ? status.voice_enabled ? '聊天与语音已配置' : '文字聊天已配置' : status ? '助手未启用' : settings.forbidden ? '需要登录密码' : '正在读取…';
+  find('#ai-settings-unavailable').hidden = !settings.forbidden;
+  find('#ai-settings-error').hidden = !settings.error || settings.forbidden;
+  find('#ai-settings-error').textContent = settings.error;
+  form.hidden = settings.forbidden;
+  find('#ai-settings-fields').disabled = !status || pending;
+  const chatKey = form.elements.api_key, voiceKey = form.elements.transcription_api_key;
+  chatKey.placeholder = status?.api_key_set ? '已设置 · 留空保留，输入新密钥替换' : '填写供应商提供的密钥';
+  voiceKey.placeholder = status?.transcription_api_key_set ? '已设置 · 留空保留，输入新密钥替换' : '留空使用聊天密钥';
+  find('#ai-chat-key-status').textContent = status?.api_key_set ? '已有密钥。留空不会清除，也不会显示原密钥。' : '尚未设置聊天密钥。';
+  find('#ai-voice-key-status').textContent = status?.transcription_api_key_set ? '已有独立密钥。留空保留，勾选下方选项才会移除。' : '没有独立密钥，使用聊天密钥。';
+  form.elements.clear_api_key.disabled = pending || !status?.api_key_set;
+  form.elements.clear_transcription_api_key.disabled = pending || !status?.transcription_api_key_set;
+  const dirty = aiSettingsDirty();
+  find('#ai-settings-save-status').textContent = settings.busy ? '正在保存…' : assistantBusy ? '助手正在处理，请完成后再保存配置。' : settings.message || (!status ? '正在读取 AI 配置…' : dirty ? '有未保存的修改，保存后立即生效。' : status.source === 'web' ? '已使用网页保存的配置。' : '当前使用 NAS 部署配置，可以在这里修改。');
+  const save = form.querySelector('[type="submit"]');
+  save.disabled = !status || pending || assistantBusy || !dirty;
+  save.innerHTML = settings.busy ? '<span class="spinner" aria-hidden="true"></span> 正在保存…' : `${icon('check')} 保存配置`;
+  const retry = find('[data-action="ai-settings-retry"]');
+  retry.hidden = !settings.error || settings.forbidden;
+  retry.disabled = settings.loading || settings.busy;
+}
+async function aiSettingsRequest(path, options = {}) {
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const response = await fetch(path, {credentials: 'same-origin', ...options, headers: {'Content-Type': 'application/json'}, cache: 'no-store', signal: controller.signal});
+    if (!response.ok) {
+      let message = response.status === 403 ? '网页配置需要先设置 HomeStorage 登录密码。' : response.status === 401 ? '登录已失效，请重新登录。' : 'AI 配置暂时无法读取或保存，请稍后重试。';
+      try { const result = await response.json(); if (typeof result.detail === 'string') message = result.detail; } catch (_) { /* Keep the safe fallback. */ }
+      const error = new Error(message); error.status = response.status; throw error;
+    }
+    const result = await response.json();
+    if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('AI 配置返回异常，请稍后重试。');
+    return result;
+  } catch (error) {
+    if (error.status) throw error;
+    throw new Error('无法连接 NAS，请检查网络后重试。');
+  } finally { clearTimeout(timer); }
+}
+async function loadAISettings(pageToken = state.renderToken) {
+  const settings = state.aiSettings;
+  if (settings.busy) return;
+  const generation = settings.generation, sequence = ++settings.sequence;
+  settings.loading = true; settings.error = ''; renderAISettings();
+  try {
+    const status = await aiSettingsRequest('/api/settings/ai');
+    if (generation !== settings.generation || sequence !== settings.sequence || pageToken !== state.renderToken || state.route !== 'settings') return;
+    const preserveDraft = aiSettingsDirty();
+    acceptAISettings(status); settings.forbidden = false;
+    if (!preserveDraft) setAISettingsValues();
+  } catch (error) {
+    if (generation !== settings.generation || sequence !== settings.sequence || pageToken !== state.renderToken || state.route !== 'settings') return;
+    if (error.status === 401) { showLogin(); return; }
+    settings.forbidden = error.status === 403; settings.error = error.message;
+  } finally {
+    if (generation === settings.generation && sequence === settings.sequence) { settings.loading = false; renderAISettings(); }
+  }
+}
+async function saveAISettings(form) {
+  const settings = state.aiSettings;
+  if (settings.busy || !settings.status || settings.forbidden || aiConfigurationBusy() || !aiSettingsDirty()) return;
+  const generation = settings.generation, pageToken = state.renderToken;
+  ++settings.sequence;
+  const body = Object.fromEntries(AI_SETTINGS_FIELDS.filter(name => form.elements[name].value.trim() !== settings.status[name]).map(name => [name, form.elements[name].value.trim()]));
+  for (const name of ['api_key', 'transcription_api_key']) {
+    if (form.elements[`clear_${name}`].checked) body[name] = null;
+    else if (form.elements[name].value) body[name] = form.elements[name].value;
+  }
+  settings.busy = true; settings.loading = false; settings.error = ''; settings.message = ''; renderAISettings();
+  try {
+    const status = await aiSettingsRequest('/api/settings/ai', {method: 'PATCH', body: JSON.stringify(body)});
+    if (generation !== settings.generation) return;
+    acceptAISettings(status); settings.forbidden = false;
+    for (const name of ['api_key', 'transcription_api_key']) { form.elements[name].value = ''; form.elements[`clear_${name}`].checked = false; }
+    setAISettingsValues();
+    state.ai.status = {...state.ai.status, enabled: settings.status.enabled, voice_enabled: settings.status.voice_enabled, model: settings.status.model};
+    settings.message = '已保存，配置立即生效，无需重建容器。';
+    if (pageToken === state.renderToken && state.route === 'settings') toast('AI 配置已保存，立即生效。');
+    try {
+      const aiStatus = await aiSettingsRequest('/api/ai/status');
+      if (generation === settings.generation) { state.ai.status = aiStatus; renderAI(); }
+    } catch (_) { /* The save succeeded; the next login refreshes capability status. */ }
+  } catch (error) {
+    if (generation !== settings.generation) return;
+    if (error.status === 401) { showLogin(); return; }
+    settings.forbidden = error.status === 403; settings.error = error.message;
+  } finally {
+    for (const name of ['api_key', 'transcription_api_key']) delete body[name];
+    if (generation === settings.generation) { settings.busy = false; renderAISettings(); }
+  }
+}
+function clearAISettings() {
+  state.aiSettings.generation++; state.aiSettings.sequence++;
+  state.aiSettings.status = null; state.aiSettings.loading = false; state.aiSettings.busy = false;
+  state.aiSettings.forbidden = false; state.aiSettings.error = ''; state.aiSettings.message = '';
+  if (aiSettingsPanel) {
+    aiSettingsPanel.querySelectorAll('input[type="password"]').forEach(input => { input.value = ''; });
+    aiSettingsPanel.remove(); aiSettingsPanel = null;
+  }
+}
+
 function renderSettings() {
   if (state.route !== 'settings' || $('app-shell').hidden) return;
+  if (!$('settings-update-panels')) $('page-view').innerHTML = '<div class="settings-layout"><div id="ai-settings-mount"></div><div id="settings-update-panels"></div></div>';
+  renderAISettings();
   const updates = state.updates;
   const status = updates.status;
   const available = Boolean(status?.available);
@@ -184,7 +328,7 @@ function renderSettings() {
   const downloaded = Number(status?.progress?.downloaded_bytes);
   const progress = phase === 'downloading' ? `<div class="update-download"><progress aria-label="新版下载进度"${Number.isFinite(total) && total > 0 && Number.isFinite(downloaded) && downloaded >= 0 ? ` max="${total}" value="${Math.min(downloaded, total)}"` : ''}></progress><span>${Number.isFinite(downloaded) && downloaded > 0 ? `${(downloaded / 1048576).toFixed(1)} MB${Number.isFinite(total) && total > 0 ? ` / ${(total / 1048576).toFixed(1)} MB` : ''}` : '正在连接下载服务…'}</span></div>` : '';
   const phaseCard = status && (phase !== 'idle' || updates.offline || updates.error) ? `<div class="update-state update-state-${['failed', 'rolled_back'].includes(phase) ? 'warning' : 'normal'}" role="status"><strong>${updates.offline && updateRunning() ? '正在等待服务恢复' : esc(UPDATE_PHASES[phase] || '更新状态')}</strong><p>${esc(updatePhaseText())}</p>${progress}${updateRunning() ? '<p class="help-text">备份和安装期间会短暂停用物品录入。请保持 NAS 开机，连接中断后本页会自动重试。</p>' : ''}${updates.needsReload ? '<button class="button primary button-small" data-action="update-reload">刷新使用新版</button>' : ''}</div>` : '';
-  $('page-view').innerHTML = `<div class="settings-grid"><section class="panel update-version-panel"><div class="panel-header"><div><h2 class="panel-title">${icon('refresh')} 程序更新</h2><p class="panel-subtitle">查看新版，选择适合自己的更新时间。</p></div><span class="status-chip">当前 ${esc(status?.current_version || state.appVersion || '版本未知')}</span></div><div class="panel-body"><div class="update-version-summary"><div><span>最新稳定版本</span><strong>${esc(status?.latest_version || '尚未检查')}</strong></div><div><span>上次检查</span><strong>${date(status?.last_checked_at, true)}</strong></div></div>${!available ? `<div class="update-unavailable" role="status"><strong>更新服务尚未就绪</strong><p>${esc(status?.message || updates.error || '正在读取更新配置…')}</p><p class="help-text">首次启用需要按新版部署说明安装一次更新服务，保留原数据、密码和 AI 配置。如果已经配置，请稍后重新检测服务。</p></div>` : ''}${updates.error && available ? `<p class="error-banner update-error" role="alert">${esc(updates.error)}</p>` : ''}${phaseCard}${status?.update_available ? `<p class="update-available">${icon('check')} 发现新版 ${esc(status.latest_version)}</p>` : available && status?.last_checked_at && status?.latest_version && ['idle', 'completed'].includes(phase) && !busy && !updates.offline ? '<p class="update-current">已检查，目前没有可安装的新版。</p>' : ''}<div class="update-buttons"><button class="button secondary" data-action="update-check"${!available || busy || updates.offline ? ' disabled' : ''}>${icon('refresh')}${phase === 'checking' ? '正在检查…' : '检查更新'}</button><button class="button primary" data-action="update-install"${!available || busy || updates.offline || !status?.update_available || !status?.latest_version ? ' disabled' : ''}>${icon('download')} 更新到新版</button>${!available || updates.error || updates.offline ? `<button class="button subtle" data-action="update-reconnect">${available ? '重新连接' : '重新检测更新服务'}</button>` : ''}${updates.reauthenticate ? '<button class="button secondary" data-action="update-login">重新登录</button>' : ''}</div>${status?.release_notes ? `<div class="update-release-notes"><h3>新版说明${releaseUrl ? `<a class="text-link" href="${esc(releaseUrl)}" target="_blank" rel="noopener noreferrer">查看发布页面 ${icon('arrow')}</a>` : ''}</h3><div>${esc(status.release_notes)}</div></div>` : ''}</div></section><section class="panel update-preference-panel"><div class="panel-header"><div><h2 class="panel-title">${icon('settings')} 自动更新</h2><p class="panel-subtitle">默认关闭，只有保存后才会生效。</p></div></div><div class="panel-body"><form id="update-preference-form"><label class="update-toggle" for="auto-update"><span><strong>允许自动安装稳定新版</strong><span>开启后每天凌晨 03:00（${esc(timezoneLabel())}）检查，有新版时先备份数据再更新。</span></span><span class="switch-control"><input type="checkbox" id="auto-update" name="auto_update" role="switch"${auto ? ' checked' : ''}${!available || updates.busy || updates.offline ? ' disabled' : ''}><span class="switch-track" aria-hidden="true"></span></span></label><p class="help-text">关闭后只会检查新版，安装由你点击确认。已经开始的一次更新会继续完成，避免中途损坏数据。</p><div class="update-preference-footer"><span id="update-save-status" role="status">${esc(updates.savedMessage || (dirty ? '已更改，等待保存。' : status?.auto_update ? '当前已开启自动更新。' : '当前已关闭自动更新。'))}</span><button class="button primary button-small" type="submit"${!available || updates.busy || updates.offline || !dirty ? ' disabled' : ''}>保存选择</button></div></form><div class="update-backup-info"><h3>${icon('shield')} 更新前自动备份</h3><p>物品资料、照片和历史记录会一起备份，保留最近 3 次成功备份。新版运行失败时，更新服务会尝试恢复原版本和数据。</p><dl><div><dt>上次备份</dt><dd>${date(status?.last_backup_at, true)}</dd></div><div><dt>已保留备份</dt><dd>${number(status?.backup_count)} 份</dd></div><div><dt>下次检查</dt><dd>${date(status?.next_check_at, true)}</dd></div></dl><p class="help-text">系统备份也需要保留。程序更新独立于 AI 助手，AI 无法开启或执行更新。</p></div></div></section></div>`;
+  $('settings-update-panels').innerHTML = `<div class="settings-grid"><section class="panel update-version-panel"><div class="panel-header"><div><h2 class="panel-title">${icon('refresh')} 程序更新</h2><p class="panel-subtitle">查看新版，选择适合自己的更新时间。</p></div><span class="status-chip">当前 ${esc(status?.current_version || state.appVersion || '版本未知')}</span></div><div class="panel-body"><div class="update-version-summary"><div><span>最新稳定版本</span><strong>${esc(status?.latest_version || '尚未检查')}</strong></div><div><span>上次检查</span><strong>${date(status?.last_checked_at, true)}</strong></div></div>${!available ? `<div class="update-unavailable" role="status"><strong>更新服务尚未就绪</strong><p>${esc(status?.message || updates.error || '正在读取更新配置…')}</p><p class="help-text">首次启用需要按新版部署说明安装一次更新服务，保留原数据、密码和 AI 配置。如果已经配置，请稍后重新检测服务。</p></div>` : ''}${updates.error && available ? `<p class="error-banner update-error" role="alert">${esc(updates.error)}</p>` : ''}${phaseCard}${status?.update_available ? `<p class="update-available">${icon('check')} 发现新版 ${esc(status.latest_version)}</p>` : available && status?.last_checked_at && status?.latest_version && ['idle', 'completed'].includes(phase) && !busy && !updates.offline ? '<p class="update-current">已检查，目前没有可安装的新版。</p>' : ''}<div class="update-buttons"><button class="button secondary" data-action="update-check"${!available || busy || updates.offline ? ' disabled' : ''}>${icon('refresh')}${phase === 'checking' ? '正在检查…' : '检查更新'}</button><button class="button primary" data-action="update-install"${!available || busy || updates.offline || !status?.update_available || !status?.latest_version ? ' disabled' : ''}>${icon('download')} 更新到新版</button>${!available || updates.error || updates.offline ? `<button class="button subtle" data-action="update-reconnect">${available ? '重新连接' : '重新检测更新服务'}</button>` : ''}${updates.reauthenticate ? '<button class="button secondary" data-action="update-login">重新登录</button>' : ''}</div>${status?.release_notes ? `<div class="update-release-notes"><h3>新版说明${releaseUrl ? `<a class="text-link" href="${esc(releaseUrl)}" target="_blank" rel="noopener noreferrer">查看发布页面 ${icon('arrow')}</a>` : ''}</h3><div>${esc(status.release_notes)}</div></div>` : ''}</div></section><section class="panel update-preference-panel"><div class="panel-header"><div><h2 class="panel-title">${icon('settings')} 自动更新</h2><p class="panel-subtitle">默认关闭，只有保存后才会生效。</p></div></div><div class="panel-body"><form id="update-preference-form"><label class="update-toggle" for="auto-update"><span><strong>允许自动安装稳定新版</strong><span>开启后每天凌晨 03:00（${esc(timezoneLabel())}）检查，有新版时先备份数据再更新。</span></span><span class="switch-control"><input type="checkbox" id="auto-update" name="auto_update" role="switch"${auto ? ' checked' : ''}${!available || updates.busy || updates.offline ? ' disabled' : ''}><span class="switch-track" aria-hidden="true"></span></span></label><p class="help-text">关闭后只会检查新版，安装由你点击确认。已经开始的一次更新会继续完成，避免中途损坏数据。</p><div class="update-preference-footer"><span id="update-save-status" role="status">${esc(updates.savedMessage || (dirty ? '已更改，等待保存。' : status?.auto_update ? '当前已开启自动更新。' : '当前已关闭自动更新。'))}</span><button class="button primary button-small" type="submit"${!available || updates.busy || updates.offline || !dirty ? ' disabled' : ''}>保存选择</button></div></form><div class="update-backup-info"><h3>${icon('shield')} 更新前自动备份</h3><p>物品资料、照片和历史记录会一起备份，保留最近 3 次成功备份。新版运行失败时，更新服务会尝试恢复原版本和数据。</p><dl><div><dt>上次备份</dt><dd>${date(status?.last_backup_at, true)}</dd></div><div><dt>已保留备份</dt><dd>${number(status?.backup_count)} 份</dd></div><div><dt>下次检查</dt><dd>${date(status?.next_check_at, true)}</dd></div></dl><p class="help-text">系统备份也需要保留。程序更新独立于 AI 助手，AI 无法开启或执行更新。</p></div></div></section></div>`;
   renderUpdateNotice();
 }
 function acceptUpdateStatus(status) {
@@ -301,7 +445,7 @@ async function refreshPage(showLoading = true) {
   const token = ++state.renderToken;
   $('page-error').hidden = true;
   setNavigation();
-  if (showLoading) $('page-view').innerHTML = loading();
+  if (showLoading && !(state.route === 'settings' && $('ai-settings-mount'))) $('page-view').innerHTML = loading();
   try {
     if (state.route === 'dashboard') { const data = await api('/api/dashboard'); if (token !== state.renderToken) return; state.dashboard = data; renderDashboard(data); setNavigation(); }
     else if (state.route === 'items') { const params = new URLSearchParams(Object.entries(state.filters).filter(([,value]) => value)); const items = await api(`/api/items?${params}`); if (token !== state.renderToken) return; state.items = items; renderItems(items); }
@@ -309,7 +453,7 @@ async function refreshPage(showLoading = true) {
     else if (state.route === 'locations') { state.locations = await api('/api/locations'); if (token !== state.renderToken) return; renderLocations(); }
     else if (state.route === 'categories') { state.categories = await api('/api/categories'); if (token !== state.renderToken) return; renderCategories(); }
     else if (state.route === 'history') { const logs = await api('/api/logs?limit=200'); if (token !== state.renderToken) return; renderHistory(logs); }
-    else if (state.route === 'settings') { await loadUpdateStatus(); if (token !== state.renderToken) return; renderSettings(); }
+    else if (state.route === 'settings') { renderSettings(); await Promise.all([loadUpdateStatus(), loadAISettings(token)]); if (token !== state.renderToken) return; renderSettings(); }
   } catch (error) { if (token !== state.renderToken) return; showError(error); $('page-view').innerHTML = empty('暂时无法读取数据', '请检查 NAS 服务是否运行，稍后重新连接。', 'retry', '重新连接', 'refresh'); }
 }
 function navigate(route) { if (location.hash === `#${route}`) { state.route = route; refreshPage(); } else location.hash = route; }
@@ -452,9 +596,10 @@ function aiPanel() {
   const microphone = window.isSecureContext && navigator.mediaDevices?.getUserMedia && window.MediaRecorder;
   const voiceAvailable = enabled && state.ai.status?.voice_enabled && microphone;
   const voiceHint = !window.isSecureContext ? '手机录音需要 HTTPS。当前地址可用手机键盘的语音输入，转成文字后发送。' : !microphone ? '当前浏览器不支持网页录音，请使用手机键盘的语音输入。' : !state.ai.status?.voice_enabled ? '配置语音识别模型后可使用录音；现在可以打字或用手机键盘语音输入。' : '录音后先核对识别文字，再点击发送。最多录音 2 分钟，文件不超过 10 MB。';
-  return `<section class="panel ai-panel" id="ai-panel" aria-labelledby="ai-panel-title"><div class="panel-header"><div><h2 class="panel-title" id="ai-panel-title">${icon('chat')} AI 收纳助手</h2><p class="panel-subtitle">问位置、记物品。每次写入，都由你确认。</p></div><button class="button subtle button-small" type="button" data-action="ai-help">${enabled ? '接入与隐私' : '如何启用'}</button></div><div class="ai-panel-body">${!enabled ? '<div class="ai-config-notice"><strong>助手尚未启用</strong><span>在 NAS 的 Compose 中配置 AI API 和模型后重建容器，普通物品管理仍然可用。</span></div>' : `<p class="ai-connection"><span class="connection-dot"></span> 已配置 · ${esc(state.ai.status.model || 'AI 模型')}</p>`}<div class="ai-messages" id="ai-messages" role="log" aria-label="与收纳助手的对话" aria-live="polite">${aiMessages()}</div>${waiting || recording ? `<p class="ai-progress" role="status">${recording ? `${icon('mic')} 正在录音，点击“停止并识别”结束…` : state.ai.transcribing ? '正在识别语音，完成后请核对文字…' : state.ai.recording === 'starting' ? '正在请求麦克风权限…' : '助手正在查询和整理…'}</p>` : ''}<form id="ai-form"><label class="screen-reader" for="ai-message">给 AI 收纳助手的消息</label><textarea class="form-control ai-input" id="ai-message" name="message" rows="2" maxlength="4000" placeholder="说说物品名称、数量和位置，或者问我东西在哪里…"${!enabled || waiting || recording ? ' disabled' : ''}>${esc(state.ai.input)}</textarea><div class="ai-compose-actions"><button class="button secondary" type="button" data-action="ai-record"${(!voiceAvailable || waiting) && !recording ? ' disabled' : ''}>${icon('mic')}${recording ? '停止并识别' : '语音输入'}</button><button class="button primary" type="submit"${!enabled || waiting || recording || !state.ai.input.trim() ? ' disabled' : ''}>${icon('arrow')} 发送</button></div></form><p class="help-text ai-voice-hint">${esc(voiceHint)}</p><p class="help-text ai-privacy-note">AI 接口会接收本次对话、录音及完成任务所需的档案信息；密钥留在 NAS 后端。助手只能读取档案和提交待确认操作，不能修改程序。</p></div></section>`;
+  return `<section class="panel ai-panel" id="ai-panel" aria-labelledby="ai-panel-title"><div class="panel-header"><div><h2 class="panel-title" id="ai-panel-title">${icon('chat')} AI 收纳助手</h2><p class="panel-subtitle">问位置、记物品。每次写入，都由你确认。</p></div><button class="button subtle button-small" type="button" data-action="${enabled ? 'ai-help' : 'ai-settings'}">${enabled ? '接入与隐私' : '配置助手'}</button></div><div class="ai-panel-body">${!enabled ? '<div class="ai-config-notice"><strong>助手尚未启用</strong><span>打开“设置 → AI 与语音”，填写 API 和模型，保存后立即生效。</span></div>' : `<p class="ai-connection"><span class="connection-dot"></span> 已配置 · ${esc(state.ai.status.model || 'AI 模型')}</p>`}<div class="ai-messages" id="ai-messages" role="log" aria-label="与收纳助手的对话" aria-live="polite">${aiMessages()}</div>${waiting || recording ? `<p class="ai-progress" role="status">${recording ? `${icon('mic')} 正在录音，点击“停止并识别”结束…` : state.ai.transcribing ? '正在识别语音，完成后请核对文字…' : state.ai.recording === 'starting' ? '正在请求麦克风权限…' : '助手正在查询和整理…'}</p>` : ''}<form id="ai-form"><label class="screen-reader" for="ai-message">给 AI 收纳助手的消息</label><textarea class="form-control ai-input" id="ai-message" name="message" rows="2" maxlength="4000" placeholder="说说物品名称、数量和位置，或者问我东西在哪里…"${!enabled || waiting || recording ? ' disabled' : ''}>${esc(state.ai.input)}</textarea><div class="ai-compose-actions"><button class="button secondary" type="button" data-action="ai-record"${(!voiceAvailable || waiting) && !recording ? ' disabled' : ''}>${icon('mic')}${recording ? '停止并识别' : '语音输入'}</button><button class="button primary" type="submit"${!enabled || waiting || recording || !state.ai.input.trim() ? ' disabled' : ''}>${icon('arrow')} 发送</button></div></form><p class="help-text ai-voice-hint">${esc(voiceHint)}</p><p class="help-text ai-privacy-note">AI 接口会接收本次对话、录音及完成任务所需的档案信息；密钥留在 NAS 后端。助手只能读取档案和提交待确认操作，不能修改程序。</p></div></section>`;
 }
 function renderAI(focus = false) {
+  renderAISettings();
   if (state.route !== 'dashboard' || !$('ai-panel')) return;
   const previousScroll = $('ai-messages')?.scrollTop || 0;
   $('ai-panel').outerHTML = aiPanel();
@@ -462,7 +607,7 @@ function renderAI(focus = false) {
   if (focus && !state.ai.busy && !state.ai.recording && !state.ai.transcribing) $('ai-message')?.focus({preventScroll: true});
 }
 function openAIHelp() {
-  openModal('ai-help-modal', `${modalHeader('AI 接入与使用', 'ai-help-modal-title')}<div class="modal-body ai-help"><p>在 NAS 的 Compose 环境变量中设置聊天 API，再重建 HomeStorage 容器：</p><dl><div><dt>AI_API_BASE_URL</dt><dd>你的 OpenAI 兼容 API 地址，通常以 /v1 结尾</dd></div><div><dt>AI_API_KEY</dt><dd>供应商提供的密钥，仅在 NAS 设置</dd></div><div><dt>AI_MODEL</dt><dd>支持工具调用的聊天模型名称</dd></div><div><dt>AI_TRANSCRIPTION_MODEL</dt><dd>语音识别模型名称，配置后启用录音</dd></div></dl><p class="help-text">语音可另设 AI_TRANSCRIPTION_BASE_URL 和 AI_TRANSCRIPTION_API_KEY。具体地址和模型以供应商文档为准。</p><h3>手机语音</h3><p>网页调用麦克风需要 HTTPS 和浏览器录音支持。可以为飞牛 NAS 配置 HTTPS 反向代理；在 HTTP 页面，使用手机键盘自带的语音输入也可以。</p><h3>每次写入由你确认</h3><p>登记、补充、移库和归档只生成草稿。检查列出的具体物品和信息，点击“确认”才保存；取消不会改变数据。助手不提供删除、代码修改、数据库命令或 NAS 操作权限。</p><h3>发送哪些信息</h3><p>对话、录音以及本次查询所需的物品和位置数据会发送到你配置的 API 服务。聊天只保存在当前页面内存中，退出登录或刷新页面会清空。</p></div><div class="modal-footer"><button class="button primary" data-action="close-modal">知道了</button></div>`);
+  openModal('ai-help-modal', `${modalHeader('AI 接入与使用', 'ai-help-modal-title')}<div class="modal-body ai-help"><p>打开“设置 → AI 与语音”，填写供应商的聊天配置，保存后立即生效，无需重建容器。</p><dl><div><dt>聊天 API 地址</dt><dd>你的 OpenAI 兼容 API 地址，通常以 /v1 结尾</dd></div><div><dt>聊天 API 密钥</dt><dd>供应商提供的密钥，保存在 NAS，保存后不会在网页显示</dd></div><div><dt>聊天模型名称</dt><dd>需要支持工具调用，以供应商文档为准</dd></div><div><dt>语音识别模型名称</dt><dd>可选，配置后启用录音；留空使用文字聊天</dd></div></dl><p class="help-text">语音可单独配置地址和密钥。首次不填写时使用聊天配置，已有独立密钥留空会保留；移除密钥需要勾选后保存。</p><h3>手机语音</h3><p>网页调用麦克风需要 HTTPS 和浏览器录音支持。可以为飞牛 NAS 配置 HTTPS 反向代理；在 HTTP 页面，使用手机键盘自带的语音输入也可以。</p><h3>每次写入由你确认</h3><p>登记、补充、移库和归档只生成草稿。检查列出的具体物品和信息，点击“确认”才保存；取消不会改变数据。助手不提供删除、代码修改、数据库命令或 NAS 操作权限。</p><h3>发送哪些信息</h3><p>对话、录音以及本次查询所需的物品和位置数据会发送到你配置的 API 服务。聊天只保存在当前页面内存中，退出登录或刷新页面会清空。</p></div><div class="modal-footer"><button class="button secondary" data-action="close-modal">知道了</button><button class="button primary" data-action="ai-settings">打开 AI 配置</button></div>`);
 }
 async function submitAI(form) {
   const message = String(new FormData(form).get('message') || '').trim();
@@ -545,7 +690,7 @@ async function toggleRecording() {
   } catch (error) { stream?.getTracks().forEach(track => track.stop()); state.ai.recording = false; toast(error.name === 'NotAllowedError' ? '麦克风权限未开启。请允许录音，或使用手机键盘语音输入。' : '无法开始录音，请检查麦克风或使用手机键盘语音输入。', true); renderAI(); }
 }
 
-function showLogin() { clearTimeout(updatePollTimer); updatePollTimer = null; state.updates.generation++; state.updates.status = null; state.updates.preference = null; state.updates.polling = false; state.updates.busy = false; state.updates.inFlight = false; state.updates.offline = false; state.updates.error = ''; state.updates.savedMessage = ''; state.updates.needsReload = false; state.updates.reauthenticate = false; state.updates.disconnectedSince = null; $('update-notice').hidden = true; stopRecording(true); state.ai.generation++; state.ai.busy = false; state.ai.transcribing = false; state.ai.messages = []; state.ai.input = ''; document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close()); $('app-shell').hidden = true; $('login-view').hidden = false; document.querySelector('#login-form input').focus(); }
+function showLogin() { clearAISettings(); clearTimeout(updatePollTimer); updatePollTimer = null; state.updates.generation++; state.updates.status = null; state.updates.preference = null; state.updates.polling = false; state.updates.busy = false; state.updates.inFlight = false; state.updates.offline = false; state.updates.error = ''; state.updates.savedMessage = ''; state.updates.needsReload = false; state.updates.reauthenticate = false; state.updates.disconnectedSince = null; $('update-notice').hidden = true; stopRecording(true); state.ai.generation++; state.ai.busy = false; state.ai.transcribing = false; state.ai.messages = []; state.ai.input = ''; document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close()); $('app-shell').hidden = true; $('login-view').hidden = false; document.querySelector('#login-form input').focus(); }
 async function bootstrap() {
   try {
     const auth = await api('/api/auth'); state.authRequired = auth.auth_required;
@@ -565,7 +710,8 @@ document.addEventListener('click', async event => {
   const target = event.target.closest('[data-action]'); if (!target || target.disabled) return;
   const action = target.dataset.action; const id = Number(target.dataset.id);
   if (action === 'close-modal') { target.closest('dialog')?.close(); return; }
-  if (action === 'update-settings') { navigate('settings'); return; }
+  if (action === 'update-settings' || action === 'ai-settings') { target.closest('dialog')?.close(); navigate('settings'); return; }
+  if (action === 'ai-settings-retry') { await loadAISettings(); return; }
   if (action === 'update-check') { await checkUpdates(); return; }
   if (action === 'update-reconnect') { await loadUpdateStatus(); renderSettings(); return; }
   if (action === 'update-install') { confirmUpdateInstall(); return; }
@@ -602,10 +748,22 @@ document.addEventListener('click', async event => {
   }
   if (action === 'logout') { try { await post('/api/logout', {}); document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close()); showLogin(); $('login-form').reset(); } catch (error) { toast(error.message, true); } }
 });
-document.addEventListener('input', event => { if (event.target.id === 'ai-message') { state.ai.input = event.target.value; const send = $('ai-form')?.querySelector('[type="submit"]'); if (send) send.disabled = !state.ai.input.trim() || state.ai.busy; } });
+document.addEventListener('input', event => {
+  if (event.target.closest('#ai-settings-form')) {
+    state.aiSettings.message = '';
+    if (['api_key', 'transcription_api_key'].includes(event.target.name) && event.target.value) aiSettingsForm().elements[`clear_${event.target.name}`].checked = false;
+    renderAISettings(); return;
+  }
+  if (event.target.id === 'ai-message') { state.ai.input = event.target.value; const send = $('ai-form')?.querySelector('[type="submit"]'); if (send) send.disabled = !state.ai.input.trim() || state.ai.busy; }
+});
 window.addEventListener('pagehide', () => stopRecording(true));
 document.addEventListener('change', event => {
   const target = event.target;
+  if (target.closest('#ai-settings-form')) {
+    state.aiSettings.message = '';
+    if (target.name.startsWith('clear_') && target.checked) aiSettingsForm().elements[target.name.slice(6)].value = '';
+    renderAISettings(); return;
+  }
   if (target.id === 'auto-update') { state.updates.preference = target.checked; state.updates.savedMessage = ''; renderSettings(); $('auto-update')?.focus({preventScroll: true}); return; }
   if (target.dataset.filter) { state.filters[target.dataset.filter] = target.value; if (target.dataset.filter === 'category_id') state.filters.category = ''; refreshPage(); }
   if (target.id === 'item-photo' && target.files[0]) {
@@ -619,6 +777,7 @@ document.addEventListener('submit', async event => {
   const form = event.target; if (!(form instanceof HTMLFormElement)) return;
   event.preventDefault();
   if (form.id === 'ai-form') { await submitAI(form); return; }
+  if (form.id === 'ai-settings-form') { await saveAISettings(form); return; }
   if (form.id === 'update-preference-form') { await saveUpdatePreference(); return; }
   if (form.id === 'update-install-form') { await installUpdate(form); return; }
   if (form.id === 'search-form') {

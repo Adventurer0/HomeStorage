@@ -6,14 +6,12 @@ inventory. The seven named tools below are the entire provider capability surfac
 
 import hashlib
 import json
-import os
 import re
 import secrets
 import time
 from contextlib import closing
 from datetime import date, datetime, timezone
 from typing import Annotated, Literal
-from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
@@ -21,6 +19,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, ValidationError, field_validator
 
 from .db import transaction
+from .ai_settings import validated_base
 
 
 MAX_AUDIO = 10 * 1024 * 1024
@@ -139,20 +138,6 @@ def iso_timestamp(value):
     return datetime.fromtimestamp(value, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def validated_base(value):
-    value = value.rstrip("/")
-    try:
-        parsed = urlsplit(value)
-        parsed.port
-    except ValueError:
-        return None
-    local = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
-    if (not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment
-            or (parsed.scheme != "https" and not (parsed.scheme == "http" and local))):
-        return None
-    return value
-
-
 def provider_tools():
     result = []
     for name, (model, description) in TOOLS.items():
@@ -231,14 +216,7 @@ def ensure_schema(db):
 
 def build_ai_router(services):
     router = APIRouter(prefix="/api/ai", tags=["AI"], route_class=LimitedAIRoute)
-    api_base = validated_base(os.environ.get("AI_API_BASE_URL", "https://api.openai.com/v1"))
-    api_key = os.environ.get("AI_API_KEY", "").strip()
-    model_name = os.environ.get("AI_MODEL", "gpt-4o-mini").strip()
-    transcription_model = os.environ.get("AI_TRANSCRIPTION_MODEL", "").strip()
-    transcription_base = validated_base(os.environ.get("AI_TRANSCRIPTION_BASE_URL", "").strip() or api_base or "")
-    transcription_key = os.environ.get("AI_TRANSCRIPTION_API_KEY", "").strip() or api_key
-    enabled = bool(api_key and model_name and api_base)
-    voice_enabled = bool(enabled and transcription_model and transcription_base and transcription_key)
+    settings = services["settings"]
 
     def actor(request, response=None):
         authenticated_actor = services["actor"](request)
@@ -254,8 +232,8 @@ def build_ai_router(services):
                                 httponly=True, secure=secure, samesite="strict", path="/")
         return hashlib.sha256(("ai-client:" + client).encode()).hexdigest()
 
-    def require_enabled(voice=False):
-        if not (voice_enabled if voice else enabled):
+    def require_enabled(configuration, voice=False):
+        if not (configuration.voice_enabled if voice else configuration.enabled):
             fail("尚未配置语音识别 API" if voice else "尚未配置 AI API 地址、密钥和模型", 503)
 
     async def provider_post(base, key, endpoint, **kwargs):
@@ -266,7 +244,7 @@ def build_ai_router(services):
         except (httpx.HTTPError, ValueError):
             fail("AI 服务连接失败，请检查 API 配置或稍后重试", 502)
         if result.status_code in {401, 403}:
-            fail("AI 服务认证失败，请检查后端 API 密钥和模型权限", 502)
+            fail("AI 服务认证失败，请在设置中检查 API 密钥和模型权限", 502)
         if result.status_code == 429:
             fail("AI 服务请求过多或额度不足，请稍后重试", 502)
         if result.status_code < 200 or result.status_code >= 300:
@@ -284,9 +262,10 @@ def build_ai_router(services):
     @router.get("/status")
     def status(request: Request, response: Response):
         actor(request, response)
-        return {"enabled": enabled, "voice_enabled": voice_enabled,
-                "model": model_name, "transcription_model": transcription_model,
-                "base_url": api_base or "", "timezone": services["timezone"]}
+        configuration = settings.snapshot()
+        return {"enabled": configuration.enabled, "voice_enabled": configuration.voice_enabled,
+                "model": configuration.model, "transcription_model": configuration.transcription_model,
+                "base_url": configuration.api_base_url, "timezone": services["timezone"]}
 
     def category_rows(db):
         return [dict(row) for row in services["list_categories"](db)]
@@ -401,7 +380,10 @@ def build_ai_router(services):
 
     @router.post("/chat")
     async def chat(body: ChatInput, request: Request, response: Response):
-        require_enabled()
+        # One immutable snapshot per conversation prevents a concurrent settings
+        # save from sending later tool-loop messages to a different provider.
+        configuration = settings.snapshot()
+        require_enabled(configuration)
         if len(body.message) + sum(len(h.content) for h in body.history) > 20000:
             fail("对话内容过长，请开始新对话", 422)
         draft_actor = actor(request, response)
@@ -422,8 +404,8 @@ def build_ai_router(services):
             return {"reply": reply, "matches": list(matched.values()), "drafts": drafts}
 
         for _ in range(4):
-            result = await provider_post(api_base, api_key, "/chat/completions", json={
-                "model": model_name, "messages": messages, "tools": provider_tools(),
+            result = await provider_post(configuration.api_base_url, configuration.api_key, "/chat/completions", json={
+                "model": configuration.model, "messages": messages, "tools": provider_tools(),
                 "tool_choice": "auto", "temperature": 0.2, "max_tokens": 1500,
             })
             try:
@@ -532,7 +514,8 @@ def build_ai_router(services):
 
     @router.post("/transcribe")
     async def transcribe(file: Annotated[UploadFile, File()], request: Request):
-        require_enabled(voice=True)
+        configuration = settings.snapshot()
+        require_enabled(configuration, voice=True)
         # Multipart is spooled by Starlette; read at most our limit + 1, and
         # always close its temporary upload. No recordings enter the data volume.
         formats = {
@@ -561,8 +544,8 @@ def build_ai_router(services):
             }[extension]
             if not valid:
                 fail("录音内容与格式不符，请重新录制", 422)
-            result = await provider_post(transcription_base, transcription_key, "/audio/transcriptions",
-                                         data={"model": transcription_model},
+            result = await provider_post(configuration.voice_base_url, configuration.voice_api_key, "/audio/transcriptions",
+                                         data={"model": configuration.transcription_model},
                                          files={"file": ("recording." + extension, data, media_type)})
             text = result.get("text")
             if not isinstance(text, str) or len(text) > 20000:

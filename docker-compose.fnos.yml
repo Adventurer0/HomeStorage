@@ -13,11 +13,12 @@ services:
       APP_TIMEZONE: Asia/Shanghai
       # 在下面两个引号中填写自己的登录密码，不能留空。
       HOME_STORAGE_PASSWORD: ""
-      # 可选：填写供应商的 OpenAI 兼容 API 地址、密钥和模型。
+      # AI 推荐启动后在网页「设置 → AI 与语音」填写，保存立即生效。
+      # 以下仅用于兼容旧部署；首次网页保存后以网页配置为准。
       AI_API_BASE_URL: "https://api.openai.com/v1"
       AI_API_KEY: ""
       AI_MODEL: "gpt-4o-mini"
-      # 开启录音转文字时填写该服务支持的语音模型，例如 whisper-1。
+      # 可选旧配置：语音模型，例如 whisper-1；也可直接在网页设置。
       AI_TRANSCRIPTION_MODEL: ""
       # 语音服务可独立配置；留空则使用上面的聊天服务地址和密钥。
       AI_TRANSCRIPTION_BASE_URL: ""

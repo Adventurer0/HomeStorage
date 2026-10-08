@@ -27,6 +27,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, ValidationError, field_validator
 
 from .db import DEFAULT_CATEGORIES, connect, initialize, transaction
+from .ai_settings import AISettingsStore, build_ai_settings_router
 from .updates import build_updates_router, maintenance_active, update_state_dir
 from .version import runtime_revision, runtime_version
 
@@ -301,6 +302,7 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
         data_path.mkdir(parents=True, exist_ok=True)
         (data_path / "uploads").mkdir(exist_ok=True)
         initialize(data_path / "homestorage.sqlite3")
+        ai_settings.initialize()
         key = stable_key(data_path)
         application.state.session_key = hmac.digest(key, configured_password.encode("utf-8"), "sha256")
         yield
@@ -311,6 +313,7 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
     application = FastAPI(title="HomeStorage", version=current_version, lifespan=lifespan)
     application.state.data_dir = data_path
     application.state.db_path = data_path / "homestorage.sqlite3"
+    ai_settings = AISettingsStore(lambda: connect(application.state.db_path))
 
     def connection():
         database = connect(application.state.db_path)
@@ -840,7 +843,11 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
         "archive_item": lambda database, item_id, note: change_archive(database, item_id, note),
         "actor": ai_actor,
         "timezone": timezone_name,
+        "settings": ai_settings,
     }))
+    application.include_router(build_ai_settings_router(
+        ai_settings, password_required=bool(configured_password),
+    ))
     application.include_router(build_updates_router(
         current_version=current_version, current_revision=current_revision,
         password_required=bool(configured_password), state_dir=updates_path,

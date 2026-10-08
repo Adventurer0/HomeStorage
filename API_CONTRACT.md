@@ -7,6 +7,7 @@ the exact checked version and explicit confirmation.
 
 Category identities, archives and restricted AI endpoints are documented in
 [FEATURES_V2.md](FEATURES_V2.md). The endpoints below remain compatible with v1.
+Live AI connection settings are documented in [AI_SETTINGS_CONTRACT.md](AI_SETTINGS_CONTRACT.md).
 Items additionally return `category_id` and nullable `archived_at`; default inventory
 queries, location counts and expiry reminders omit archives. JSON export version 2
 includes all items and categories.
