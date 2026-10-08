@@ -1,0 +1,105 @@
+name: Publish HomeStorage update
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homestorage-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      revision: ${{ steps.version.outputs.revision }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Verify tag, source version and commit
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REVISION: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_REVISION"
+          case "$RELEASE_TAG" in v*) VERSION="${RELEASE_TAG#v}" ;; *) exit 1 ;; esac
+          python scripts/release_manifest.py --version "$VERSION" --revision "$RELEASE_REVISION" --check-source-only
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "revision=$RELEASE_REVISION" >> "$GITHUB_OUTPUT"
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m unittest discover -s tests -v
+
+  image:
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build versioned Docker-save archive
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          tags: homestorage:${{ needs.verify.outputs.version }}-${{ matrix.arch }}
+          build-args: |
+            HOMESTORAGE_VERSION=${{ needs.verify.outputs.version }}
+            HOMESTORAGE_REVISION=${{ needs.verify.outputs.revision }}
+          outputs: type=docker,dest=${{ runner.temp }}/homestorage-image.tar
+      - name: Compress Docker archive
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          IMAGE_TAR: ${{ runner.temp }}/homestorage-image.tar
+        run: |
+          mkdir release-assets
+          gzip -n -c "$IMAGE_TAR" > "release-assets/homestorage-$VERSION-linux-$ARCH.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.arch }}
+          path: release-assets/*.tar.gz
+          compression-level: 0
+          retention-days: 2
+
+  release:
+    needs: [verify, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: image-*
+          path: release-assets
+          merge-multiple: true
+      - name: Create checked update manifest
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          REVISION: ${{ needs.verify.outputs.revision }}
+        run: python scripts/release_manifest.py --version "$VERSION" --revision "$REVISION" --asset-dir release-assets
+      - name: Publish a new GitHub release without overwriting existing assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo 'This release already exists; refusing to overwrite it.' >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "HomeStorage $RELEASE_TAG" --notes-file RELEASE_NOTES.md release-assets/*

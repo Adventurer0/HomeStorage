@@ -1,9 +1,20 @@
 FROM python:3.12-slim
 
+ARG HOMESTORAGE_VERSION=2.1.0
+ARG HOMESTORAGE_REVISION=local
+LABEL org.opencontainers.image.title="HomeStorage" \
+    org.opencontainers.image.source="https://github.com/Adventurer0/HomeStorage" \
+    org.opencontainers.image.version="${HOMESTORAGE_VERSION}" \
+    org.opencontainers.image.revision="${HOMESTORAGE_REVISION}"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DATA_DIR=/data \
-    APP_TIMEZONE=Asia/Shanghai
+    APP_TIMEZONE=Asia/Shanghai \
+    HOMESTORAGE_VERSION=${HOMESTORAGE_VERSION} \
+    HOMESTORAGE_REVISION=${HOMESTORAGE_REVISION}
+
+RUN python -c "import os,re; assert re.fullmatch(r'[0-9]+\\.[0-9]+\\.[0-9]+', os.environ['HOMESTORAGE_VERSION']); assert re.fullmatch(r'local|[0-9a-f]{40}', os.environ['HOMESTORAGE_REVISION'])"
 
 WORKDIR /app
 COPY requirements.txt ./
@@ -14,7 +25,8 @@ RUN --mount=type=secret,id=pip_ca,required=false \
     && mkdir -p /data \
     && chown 1000:1000 /data
 COPY app ./app
-RUN chmod -R a+rX /app/app
+COPY updater ./updater
+RUN chmod -R a+rX /app/app /app/updater
 
 USER 1000:1000
 EXPOSE 8080

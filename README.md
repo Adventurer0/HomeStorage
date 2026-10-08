@@ -17,6 +17,7 @@
 - **自定义分类**：新增、重命名、排序和停用分类，已有物品使用稳定分类 ID。
 - **归档与恢复**：保留物品数量、照片、位置和日志，将归档物品从日常库存及提醒中隐藏。
 - **AI 收纳助手**：在首页通过文字或录音查找物品、生成录入、补充、移库和归档草稿；用户明确确认后才执行数据写入。
+- **网页更新设置**：检查新版本、确认立即更新，或自主开启每天定时自动更新；更新前备份，失败时恢复。
 
 数据库为空时只有一个「家」位置，不会把示例物品混进你的库存。先添加房间和箱子，再开始录入。
 
@@ -32,7 +33,7 @@ AI 功能可选。飞牛用户编辑 `docker-compose.fnos.yml` 的 environment�
 | `AI_TRANSCRIPTION_MODEL` | 可选语音识别模型；支持 OpenAI 语音接口时可使用 `whisper-1` |
 | `AI_TRANSCRIPTION_BASE_URL` / `AI_TRANSCRIPTION_API_KEY` | 可选独立语音服务，留空则使用聊天服务配置 |
 
-填好后重新构建、启动项目。没有填写 API 密钥时，分类、搜索、归档等普通功能照常工作。不同服务商不一定提供语音识别接口，聊天和语音服务可以分别配置。不要将已经填了密码或 API 密钥的配置文件上传回 GitHub。
+首次部署时填好后构建、启动项目。已通过网页更新的项目，修改 Compose 前先下载当前已安装版本的源码，避免旧源码重新构建导致降级。没有填写 API 密钥时，分类、搜索、归档等普通功能照常工作。不同服务商不一定提供语音识别接口，聊天和语音服务可以分别配置。不要将已经填了密码或 API 密钥的配置文件上传回 GitHub。
 
 首页可问“扭力扳手在哪里”，或说“新增两条 USB-C 线，放在书房配件箱”。AI 查询真实库存；位置不明确时需要补充信息。新增、补充、移动和归档都显示待确认卡片，用户点击确认后才能写入。草稿15分钟过期；库存或目标位置发生变化时需要重新生成。取消、重复确认不会产生重复库存。归档保留原始状态和数量，恢复后可继续使用。
 
@@ -42,7 +43,7 @@ AI 只获得列举分类、位置、查询物品与提出数据操作草稿的�
 
 ## 在 NAS 上部署
 
-需要 NAS 支持 Docker / Container Manager 和 Docker Compose v2。本项目使用单容器 FastAPI + SQLite，没有独立数据库服务和 Node.js 构建步骤。基础镜像支持常见的 x86_64 / ARM64 NAS。
+需要 NAS 支持 Docker / Container Manager 和 Docker Compose v2。项目包含 FastAPI + SQLite 网页容器，以及独立的更新服务，没有独立数据库服务和 Node.js 构建步骤。两个服务首次共用一个本地构建镜像，后续网页容器从 GitHub Release 的校验镜像包更新，无需登录镜像仓库。支持常见的 x86_64 / ARM64 NAS。
 
 将仓库放在 NAS 的本地磁盘，例如 `/volume1/docker/HomeStorage`。SQLite 数据目录应位于 NAS **本地文件系统**，不要通过 SMB/NFS 共享挂载另一个设备的目录。
 
@@ -79,7 +80,9 @@ docker compose logs --tail=80 homestorage
 
 手机连到家庭网络后，浏览器打开 `http://NAS的局域网IP:8080`，输入配置的密码。在群晖 Container Manager 中也可「项目 → 新增」选择仓库目录和 `compose.yaml`，先准备好 `.env` 与 data 权限。
 
-宿主机 `./data` 挂载到容器 `/data`，保存 SQLite 数据库、照片和会话密钥。容器更新、删除或重建不会删除该目录。保持单个容器、单个服务进程访问同一个 SQLite 文件。
+宿主机 `./data` 挂载到网页容器 `/data`，保存 SQLite 数据库、照片和会话密钥。容器更新、删除或重建不会删除该目录。更新服务将同一目录挂载在 `/app-data`，仅在停止网页容器后备份或恢复；保持单个网页容器、单个服务进程访问同一个 SQLite 文件。
+
+更新设置和最近三个成功更新的完整数据备份保存在 `homestorage_update_state` 卷中。更新服务使用 Docker socket 来替换当前 Compose 项目中标记为 HomeStorage 的网页容器，不开放宿主机端口；网页容器和 AI 均没有 Docker socket。`.env` 的 `PUID/PGID` 同时控制网页用户和更新令牌读取权限。
 
 ### 日常使用
 
@@ -95,7 +98,21 @@ docker compose logs --tail=80 homestorage
 
 ### 更新
 
-先备份数据，再在仓库目录执行：
+打开网页 **设置 → 程序更新**：
+
+- 点击「检查更新」查看最新版本和说明，再确认「立即更新」。
+- 「自动更新」默认关闭。开启后每天按 `APP_TIMEZONE` 的凌晨 03:00 检查并安装新版本；关闭后不会安排新的自动安装。
+- 安装前完整备份数据，保留最近三个成功更新的备份；下载失败不影响当前服务，安装或健康检查失败会尝试恢复旧容器和数据。网页显示更新进度和最终结果。
+
+更新只接受本仓库的正式新版及对应架构镜像，核对 SHA256、版本和源码提交，不执行任意命令或降级。更新设置需要登录密码，AI 不具有检查、开启或执行更新的工具。开始安装后短暂维护，页面可读取，物品写入暂时停止；已经进行中的更新需要完成或恢复，关闭自动更新不会中断它。
+
+若仓库公开，不需要 GitHub token。若仓库私有，在 `.env` 的 `UPDATE_GITHUB_TOKEN` 填入只授予 **Adventurer0/HomeStorage → Contents: Read-only** 的细粒度 GitHub token；飞牛用户填在 updater 的 environment。该配置只给更新服务，不给网页和 AI。不要在聊天中发送 token，也不要将已填写配置提交到仓库。访问 GitHub 或下载失败时，网页会说明原因，普通收纳功能继续运行。
+
+**已有安装需要一次升级部署**：先停止整个项目并备份数据及配置，获取本次源码，将新版 Compose 中的 updater、更新状态卷和 app 标记合并到原配置，保留原数据路径、密码、端口和 AI 配置，再构建启动。后续在网页控制更新。网页更新只替换应用容器；更新服务自身及 Compose 配置变更仍需按版本说明手动处理。
+
+**网页更新后不要对旧源码执行 `build` / `up` 或在 NAS 点击旧项目的「重新构建」**，否则会重新安装旧版本。容器普通「重启」会保留已安装版本。修改部署配置前，先下载当前已安装版本的源码，或使用该版本的镜像；不要用 environment 覆盖 `HOMESTORAGE_VERSION/HOMESTORAGE_REVISION`。
+
+源码开发方式更新仍可使用以下命令，但应先关闭自动更新并备份，源码版本必须不低于当前已安装版本：
 
 ```bash
 git pull --ff-only
@@ -107,12 +124,12 @@ docker compose up -d --build
 JSON 导出包含位置、物品和日志，**不包含照片，也不是完整恢复文件**。第一版没有 JSON 导入。完整备份使用 NAS 快照，或停服务后备份整个 data 目录：
 
 ```bash
-docker compose stop homestorage
+docker compose stop
 tar -czf "homestorage-backup-$(date +%Y%m%d-%H%M%S).tar.gz" data
-docker compose start homestorage
+docker compose start
 ```
 
-如果备份命令失败，也应重新启动服务。恢复时停止服务，保留当前 data 副本，再解压可信备份替换 data，确认属主与 `.env` 中 `PUID/PGID` 一致，然后启动。`.env` 单独安全保存。不要同时让两个容器对同一份数据库写入。
+如果备份命令失败，也应重新启动项目。恢复时停止整个项目，保留当前 data 副本，再解压可信备份替换 data，确认属主与 `.env` 中 `PUID/PGID` 一致，然后启动。`.env` 单独安全保存，更新状态卷也应纳入 NAS 备份。不要同时让两个网页容器对同一份数据库写入。
 
 ### 常见问题
 
@@ -145,3 +162,7 @@ python3 -m venv .venv
 默认数据库位于 `./data`；可通过 `DATA_DIR` 覆盖。未设置 `HOME_STORAGE_PASSWORD` 时只适用于本机开发；Docker Compose 强制要求配置密码。API 契约见 [API_CONTRACT.md](API_CONTRACT.md)。`GET /health` 检查数据库连通性。
 
 开发检查包括物品完整存取流程、层级校验、保质期边界、上传校验、身份校验、日志和持久化。NAS 实机需要按上述步骤自行部署后确认网络与目录权限。
+
+## 发布正式更新（维护者）
+
+修改 `app/version.py` 的 `VERSION`，同步 `Dockerfile` 的 `HOMESTORAGE_VERSION` 默认值并更新 `RELEASE_NOTES.md`，提交后创建匹配的 `vMAJOR.MINOR.PATCH` Git tag。GitHub Actions 先核对 tag、源码版本与完整提交 SHA 并运行测试，再构建 amd64 / arm64 镜像，生成 Docker-save 的 gzip 包及 `homestorage-update.json` 校验清单，最后创建新的 GitHub Release。无需 GHCR 或 Docker Hub 登录；Release 继承仓库可见性。已有同名 Release 不会被覆盖，版本/tag 不一致会拒绝发布。

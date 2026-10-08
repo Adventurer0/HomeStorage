@@ -29,6 +29,7 @@ const ICONS = {
   mic: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/>',
   tags: '<path d="M3 3h8l10 10-8 8L3 11V3Z"/><circle cx="7" cy="7" r="1"/>',
   refresh: '<path d="M20 8a9 9 0 0 0-15-3L3 8m0-5v5h5m-4 8a9 9 0 0 0 15 3l2-3m0 5v-5h-5"/>',
+  settings: '<path d="m9 3-1 3-3 1-2 3 2 2v3l3 2 1 4h6l1-4 3-2v-3l2-2-2-3-3-1-1-3H9Z"/><circle cx="12" cy="12" r="3"/>',
 };
 const icon = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ICONS.box}</svg>`;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
@@ -36,8 +37,8 @@ const number = value => Number(value || 0).toLocaleString('zh-CN');
 const STATUS = {in_stock: '在库', in_use: '使用中', lent: '已借出', depleted: '已用完', discarded: '已丢弃', lost: '已遗失'};
 const ACTION = {create: '登记物品', item_create: '登记物品', update: '编辑档案', item_update: '编辑档案', move: '移动位置', take_out: '取出使用', return: '归还入库', lend: '借出物品', consume: '消耗库存', restock: '补充库存', discard: '丢弃物品', lost: '标记遗失', location_create: '新增位置', location_update: '编辑位置', location_delete: '删除位置', search: '搜索物品', archive: '归档物品', restore: '恢复物品', category_create: '新增分类', category_update: '编辑分类', category_delete: '删除分类'};
 const LOCATION_TYPES = {home: '家庭', room: '房间', shelf: '货架 / 柜子', drawer: '抽屉', box: '收纳箱', other: '其他'};
-const ROUTES = {dashboard: ['家庭概览', '好好收纳，也好好生活。', 'grid', '概览'], items: ['物品档案', '找得到，用得好。每件物品都有迹可循。', 'box', '物品'], locations: ['收纳空间', '从房间到收纳箱，把家的每个角落串起来。', 'pin', '位置'], expiry: ['到期提醒', '提前看一眼，少一点浪费，多一点安心。', 'clock', '到期'], categories: ['分类管理', '按家里的习惯分类，让每一件物品都好找。', 'tags', '分类'], history: ['操作记录', '每一次取放、移动与补充，都有记录。', 'history', '记录']};
-const state = {route: 'dashboard', locations: [], categories: [], items: [], dashboard: null, logs: [], timezone: 'Asia/Shanghai', ai: {status: null, messages: [], input: '', generation: 0, busy: false, recording: false, transcribing: false}, filters: {q: '', location_id: '', category: '', category_id: '', status: '', archived: 'false'}, expiry: 'soon', selectedLocation: null, detail: null, authRequired: false, renderToken: 0};
+const ROUTES = {dashboard: ['家庭概览', '好好收纳，也好好生活。', 'grid', '概览'], items: ['物品档案', '找得到，用得好。每件物品都有迹可循。', 'box', '物品'], locations: ['收纳空间', '从房间到收纳箱，把家的每个角落串起来。', 'pin', '位置'], expiry: ['到期提醒', '提前看一眼，少一点浪费，多一点安心。', 'clock', '到期'], categories: ['分类管理', '按家里的习惯分类，让每一件物品都好找。', 'tags', '分类'], history: ['操作记录', '每一次取放、移动与补充，都有记录。', 'history', '记录'], settings: ['应用设置', '更新由你决定，家庭档案安心保留。', 'settings', '设置']};
+const state = {route: 'dashboard', locations: [], categories: [], items: [], dashboard: null, logs: [], timezone: 'Asia/Shanghai', appVersion: '', updates: {status: null, preference: null, busy: false, polling: false, generation: 0, sequence: 0, inFlight: false, offline: false, disconnectedSince: null, reauthenticate: false, error: '', savedMessage: '', needsReload: false}, ai: {status: null, messages: [], input: '', generation: 0, busy: false, recording: false, transcribing: false}, filters: {q: '', location_id: '', category: '', category_id: '', status: '', archived: 'false'}, expiry: 'soon', selectedLocation: null, detail: null, authRequired: false, renderToken: 0};
 const $ = id => document.getElementById(id);
 
 async function api(path, options = {}) {
@@ -71,6 +72,7 @@ function date(value, withTime = false) {
   return new Intl.DateTimeFormat('zh-CN', {timeZone: state.timezone, month: '2-digit', day: '2-digit', ...(withTime ? {hour: '2-digit', minute: '2-digit', hour12: false} : {year: 'numeric'})}).format(parsed);
 }
 function today() { return new Intl.DateTimeFormat('en-CA', {timeZone: state.timezone, year: 'numeric', month: '2-digit', day: '2-digit'}).format(new Date()); }
+function timezoneLabel() { return state.timezone === 'Asia/Shanghai' ? '北京时间' : new Intl.DateTimeFormat('zh-CN', {timeZone: state.timezone, timeZoneName: 'long'}).formatToParts(new Date()).find(part => part.type === 'timeZoneName')?.value || state.timezone; }
 function imageUrl(value) { return typeof value === 'string' && /^\/uploads\/[A-Za-z0-9._-]+$/.test(value) ? value : ''; }
 function badge(status) { return `<span class="status-chip status-${esc(status)}">${esc(STATUS[status] || status)}</span>`; }
 function archived(item) { return Boolean(item.archived_at); }
@@ -97,8 +99,10 @@ function setNavigation() {
   $('page-eyebrow').textContent = state.route === 'dashboard' ? 'YOUR HOME, ORGANIZED' : 'A PLACE FOR EVERYTHING';
   $('export-button').innerHTML = `${icon('download')}<span>导出数据</span>`;
   $('add-item-button').innerHTML = `${icon('plus')}<span>登记物品</span>`;
+  $('add-item-button').hidden = state.route === 'settings';
   $('logout-button').innerHTML = icon('logout');
   $('logout-button').hidden = !state.authRequired;
+  renderUpdateNotice();
 }
 
 const illustration = `<svg class="storage-illustration" viewBox="0 0 400 240" fill="none" aria-hidden="true"><ellipse cx="217" cy="218" rx="154" ry="9" fill="#bacac0" opacity=".23"/><path d="M119 64h216v153H119z" fill="#edf0e5"/><path d="M113 62h228v8H113zM113 130h228v7H113zM113 208h228v9H113z" fill="#718b78"/><path d="M121 70h7v138h-7zm204 0h7v138h-7z" fill="#809981"/><rect x="142" y="89" width="71" height="40" rx="4" fill="#d8c3a0"/><path d="M138 87h79v8h-79z" fill="#e8d8b9"/><rect x="164" y="101" width="24" height="11" rx="2" fill="#fbf7ed"/><path d="M171 106h10" stroke="#b1a087" stroke-width="2"/><rect x="230" y="96" width="72" height="33" rx="4" fill="#adc2ad"/><path d="M226 94h80v7h-80z" fill="#c6d3bc"/><rect x="253" y="107" width="25" height="10" rx="2" fill="#f7f9ef"/><path d="M261 112h10" stroke="#849b80" stroke-width="2"/><rect x="143" y="157" width="73" height="50" rx="4" fill="#b2c0b7"/><path d="M138 154h83v8h-83z" fill="#c8d2c9"/><path d="M168 174h23v10h-23z" fill="#f3f4ea"/><rect x="233" y="163" width="67" height="44" rx="4" fill="#d8bc8e"/><path d="M229 159h76v8h-76z" fill="#e5d0a9"/><rect x="256" y="178" width="21" height="10" rx="2" fill="#fbf5e6"/><path d="M87 177c-15-21-22-42-7-53 1 19 14 25 11 48 8-25 9-44 28-44 4 18-11 29-21 48" fill="#7c9b77"/><path d="M91 179v20" stroke="#667f63" stroke-width="3"/><path d="M70 192h41l-6 25H76z" fill="#d7b992"/><path d="m278 53 10-10 10 10" stroke="#99b195" stroke-width="2"/><circle cx="77" cy="70" r="6" fill="#d2bb88"/><path d="m356 152 5-5 5 5-5 5-5-5Z" fill="#b3c1ab"/><path d="M188 43v-7m-3 3h6" stroke="#acbda8" stroke-width="2"/></svg>`;
@@ -144,6 +148,155 @@ function renderLocations() {
 function renderHistory(logs) {
   $('page-view').innerHTML = `<div class="history-heading"><span>最近 <strong>${number(logs.length)}</strong> 条记录</span><span class="chip">${icon('shield')} 操作自动留痕</span></div><section class="panel log-table">${logs.length ? logs.map(log => logRow(log)).join('') : empty('尚无操作记录', '登记物品、取放或调整位置后，记录会自动出现在这里。', 'add-item', '登记第一件物品', 'history')}</section><p class="help-text history-note">展示最近 200 条操作。导出数据可获取完整记录。</p>`;
 }
+
+const UPDATE_PHASES = {idle: '等待检查', checking: '正在检查新版', queued: '更新已安排', downloading: '正在下载新版', loading: '正在准备新版', stopping: '正在暂停服务', backing_up: '正在备份家庭档案', applying: '正在安装新版', verifying: '正在检查新版是否正常', completed: '更新已完成', failed: '更新未完成', rolled_back: '已恢复原版本'};
+const UPDATE_RUNNING = new Set(['queued', 'downloading', 'loading', 'stopping', 'backing_up', 'applying', 'verifying']);
+const updateRunning = () => state.updates.inFlight || UPDATE_RUNNING.has(state.updates.status?.phase);
+const updateBusy = () => updateRunning() || state.updates.status?.phase === 'checking';
+let updatePollTimer = null;
+
+function safeReleaseUrl(value) {
+  try { const url = new URL(value); return url.protocol === 'https:' && url.hostname === 'github.com' && url.pathname.startsWith('/Adventurer0/HomeStorage/releases/') ? url.href : ''; }
+  catch (_) { return ''; }
+}
+function updatePhaseText() {
+  if (state.updates.offline && updateRunning()) return '服务正在重新连接，更新结果会在恢复后显示。';
+  const status = state.updates.status;
+  return status?.message || UPDATE_PHASES[status?.phase] || '更新状态暂时不可用。';
+}
+function renderUpdateNotice() {
+  const notice = $('update-notice');
+  notice.hidden = state.route === 'settings' || (!updateRunning() && !state.updates.needsReload);
+  if (notice.hidden) return;
+  notice.innerHTML = `<span>${icon(state.updates.needsReload ? 'check' : 'refresh')}<span>${esc(state.updates.needsReload ? '新版已就绪，刷新页面即可使用。' : updatePhaseText())}</span></span><button class="button secondary button-small" data-action="${state.updates.needsReload ? 'update-reload' : 'update-settings'}">${state.updates.needsReload ? '刷新使用新版' : '查看更新'}</button>`;
+}
+function renderSettings() {
+  if (state.route !== 'settings' || $('app-shell').hidden) return;
+  const updates = state.updates;
+  const status = updates.status;
+  const available = Boolean(status?.available);
+  const busy = updates.busy || updateBusy();
+  const phase = status?.phase || 'idle';
+  const releaseUrl = safeReleaseUrl(status?.release_url);
+  const auto = updates.preference ?? Boolean(status?.auto_update);
+  const dirty = status && auto !== Boolean(status.auto_update);
+  const total = Number(status?.progress?.total_bytes);
+  const downloaded = Number(status?.progress?.downloaded_bytes);
+  const progress = phase === 'downloading' ? `<div class="update-download"><progress aria-label="新版下载进度"${Number.isFinite(total) && total > 0 && Number.isFinite(downloaded) && downloaded >= 0 ? ` max="${total}" value="${Math.min(downloaded, total)}"` : ''}></progress><span>${Number.isFinite(downloaded) && downloaded > 0 ? `${(downloaded / 1048576).toFixed(1)} MB${Number.isFinite(total) && total > 0 ? ` / ${(total / 1048576).toFixed(1)} MB` : ''}` : '正在连接下载服务…'}</span></div>` : '';
+  const phaseCard = status && (phase !== 'idle' || updates.offline || updates.error) ? `<div class="update-state update-state-${['failed', 'rolled_back'].includes(phase) ? 'warning' : 'normal'}" role="status"><strong>${updates.offline && updateRunning() ? '正在等待服务恢复' : esc(UPDATE_PHASES[phase] || '更新状态')}</strong><p>${esc(updatePhaseText())}</p>${progress}${updateRunning() ? '<p class="help-text">备份和安装期间会短暂停用物品录入。请保持 NAS 开机，连接中断后本页会自动重试。</p>' : ''}${updates.needsReload ? '<button class="button primary button-small" data-action="update-reload">刷新使用新版</button>' : ''}</div>` : '';
+  $('page-view').innerHTML = `<div class="settings-grid"><section class="panel update-version-panel"><div class="panel-header"><div><h2 class="panel-title">${icon('refresh')} 程序更新</h2><p class="panel-subtitle">查看新版，选择适合自己的更新时间。</p></div><span class="status-chip">当前 ${esc(status?.current_version || state.appVersion || '版本未知')}</span></div><div class="panel-body"><div class="update-version-summary"><div><span>最新稳定版本</span><strong>${esc(status?.latest_version || '尚未检查')}</strong></div><div><span>上次检查</span><strong>${date(status?.last_checked_at, true)}</strong></div></div>${!available ? `<div class="update-unavailable" role="status"><strong>更新服务尚未就绪</strong><p>${esc(status?.message || updates.error || '正在读取更新配置…')}</p><p class="help-text">首次启用需要按新版部署说明安装一次更新服务，保留原数据、密码和 AI 配置。如果已经配置，请稍后重新检测服务。</p></div>` : ''}${updates.error && available ? `<p class="error-banner update-error" role="alert">${esc(updates.error)}</p>` : ''}${phaseCard}${status?.update_available ? `<p class="update-available">${icon('check')} 发现新版 ${esc(status.latest_version)}</p>` : available && status?.last_checked_at && status?.latest_version && ['idle', 'completed'].includes(phase) && !busy && !updates.offline ? '<p class="update-current">已检查，目前没有可安装的新版。</p>' : ''}<div class="update-buttons"><button class="button secondary" data-action="update-check"${!available || busy || updates.offline ? ' disabled' : ''}>${icon('refresh')}${phase === 'checking' ? '正在检查…' : '检查更新'}</button><button class="button primary" data-action="update-install"${!available || busy || updates.offline || !status?.update_available || !status?.latest_version ? ' disabled' : ''}>${icon('download')} 更新到新版</button>${!available || updates.error || updates.offline ? `<button class="button subtle" data-action="update-reconnect">${available ? '重新连接' : '重新检测更新服务'}</button>` : ''}${updates.reauthenticate ? '<button class="button secondary" data-action="update-login">重新登录</button>' : ''}</div>${status?.release_notes ? `<div class="update-release-notes"><h3>新版说明${releaseUrl ? `<a class="text-link" href="${esc(releaseUrl)}" target="_blank" rel="noopener noreferrer">查看发布页面 ${icon('arrow')}</a>` : ''}</h3><div>${esc(status.release_notes)}</div></div>` : ''}</div></section><section class="panel update-preference-panel"><div class="panel-header"><div><h2 class="panel-title">${icon('settings')} 自动更新</h2><p class="panel-subtitle">默认关闭，只有保存后才会生效。</p></div></div><div class="panel-body"><form id="update-preference-form"><label class="update-toggle" for="auto-update"><span><strong>允许自动安装稳定新版</strong><span>开启后每天凌晨 03:00（${esc(timezoneLabel())}）检查，有新版时先备份数据再更新。</span></span><span class="switch-control"><input type="checkbox" id="auto-update" name="auto_update" role="switch"${auto ? ' checked' : ''}${!available || updates.busy || updates.offline ? ' disabled' : ''}><span class="switch-track" aria-hidden="true"></span></span></label><p class="help-text">关闭后只会检查新版，安装由你点击确认。已经开始的一次更新会继续完成，避免中途损坏数据。</p><div class="update-preference-footer"><span id="update-save-status" role="status">${esc(updates.savedMessage || (dirty ? '已更改，等待保存。' : status?.auto_update ? '当前已开启自动更新。' : '当前已关闭自动更新。'))}</span><button class="button primary button-small" type="submit"${!available || updates.busy || updates.offline || !dirty ? ' disabled' : ''}>保存选择</button></div></form><div class="update-backup-info"><h3>${icon('shield')} 更新前自动备份</h3><p>物品资料、照片和历史记录会一起备份，保留最近 3 次成功备份。新版运行失败时，更新服务会尝试恢复原版本和数据。</p><dl><div><dt>上次备份</dt><dd>${date(status?.last_backup_at, true)}</dd></div><div><dt>已保留备份</dt><dd>${number(status?.backup_count)} 份</dd></div><div><dt>下次检查</dt><dd>${date(status?.next_check_at, true)}</dd></div></dl><p class="help-text">系统备份也需要保留。程序更新独立于 AI 助手，AI 无法开启或执行更新。</p></div></div></section></div>`;
+  renderUpdateNotice();
+}
+function acceptUpdateStatus(status) {
+  const updates = state.updates;
+  if (!status.available && updateRunning()) {
+    updates.status = {...updates.status, available: false, current_version: status.current_version || updates.status?.current_version, message: status.message || '更新服务暂时未就绪，正在重新连接。'};
+    updates.inFlight = true; updates.offline = true; updates.error = status.message || '正在等待更新服务恢复。';
+    renderUpdateNotice(); return;
+  }
+  const draftChanged = updates.status && updates.preference !== null && updates.preference !== Boolean(updates.status.auto_update);
+  updates.status = status;
+  if (!draftChanged) updates.preference = Boolean(status.auto_update);
+  updates.offline = false; updates.disconnectedSince = null; updates.reauthenticate = false; updates.error = '';
+  updates.inFlight = UPDATE_RUNNING.has(status.phase);
+  if (state.appVersion && status.current_version && status.current_version !== state.appVersion) updates.needsReload = true;
+  renderUpdateNotice();
+}
+async function updateRequest(path, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const response = await fetch(path, {credentials: 'same-origin', ...options, headers: {'Content-Type': 'application/json'}, signal: controller.signal, cache: 'no-store'});
+    if (!response.ok) {
+      let message = response.status === 401 ? '登录状态已失效，请重新登录。' : response.status === 404 ? '当前版本还没有更新服务，请先按新版部署说明升级一次。' : '更新服务暂时无法连接，请稍后重新检查。';
+      try { const data = await response.json(); if (typeof data.detail === 'string') message = data.detail; } catch (_) { /* Safe fallback for a restarting service. */ }
+      const error = new Error(message); error.status = response.status; throw error;
+    }
+    const data = await response.json();
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('更新服务返回异常，请稍后重试。');
+    return data;
+  } catch (error) {
+    if (error.status) throw error;
+    const offline = new Error('无法连接更新服务，请检查 NAS 网络。'); offline.offline = true; throw offline;
+  } finally { clearTimeout(timer); }
+}
+function handleUpdateError(error) {
+  const updates = state.updates;
+  if (error.status === 401 && !updateRunning()) { showLogin(); return; }
+  updates.offline = Boolean(error.offline || error.status === 401 || error.status === 503);
+  if (updates.offline && !updates.disconnectedSince) updates.disconnectedSince = Date.now();
+  updates.reauthenticate = error.status === 401 && Date.now() - updates.disconnectedSince >= 30000;
+  updates.error = updates.offline && updateRunning() ? '更新期间连接暂时中断，正在等待服务恢复。' : error.message;
+  if (updates.reauthenticate) updates.error = '服务正在恢复或登录已失效。可以继续等待，或重新登录查看更新结果。';
+  renderUpdateNotice();
+}
+function scheduleUpdatePoll() {
+  clearTimeout(updatePollTimer); updatePollTimer = null;
+  if ($('app-shell').hidden || (state.route !== 'settings' && !updateRunning() && !state.updates.status?.auto_update)) return;
+  updatePollTimer = setTimeout(async () => { await loadUpdateStatus(); renderSettings(); }, updateBusy() || state.updates.offline ? 5000 : state.route === 'settings' ? 30000 : 60000);
+}
+async function loadUpdateStatus() {
+  const updates = state.updates;
+  if (updates.polling || updates.busy) { scheduleUpdatePoll(); return; }
+  const generation = updates.generation;
+  const sequence = ++updates.sequence;
+  updates.polling = true;
+  try { const status = await updateRequest('/api/settings/updates'); if (generation === updates.generation && sequence === updates.sequence) acceptUpdateStatus(status); }
+  catch (error) { if (generation === updates.generation && sequence === updates.sequence) handleUpdateError(error); }
+  finally { if (generation === updates.generation) { updates.polling = false; scheduleUpdatePoll(); } }
+}
+async function checkUpdates() {
+  const updates = state.updates;
+  if (updates.busy || updateBusy() || !updates.status?.available) return;
+  const generation = updates.generation;
+  ++updates.sequence;
+  updates.busy = true; updates.savedMessage = ''; renderSettings();
+  try { const status = await updateRequest('/api/settings/updates/check', {method: 'POST', body: '{}'}); if (generation === updates.generation) acceptUpdateStatus(status); }
+  catch (error) { if (generation === updates.generation) handleUpdateError(error); }
+  finally { if (generation === updates.generation) { updates.busy = false; renderSettings(); scheduleUpdatePoll(); } }
+}
+async function saveUpdatePreference() {
+  const updates = state.updates;
+  if (updates.busy || !updates.status?.available) return;
+  const generation = updates.generation;
+  ++updates.sequence;
+  const choice = Boolean(updates.preference);
+  updates.busy = true; updates.savedMessage = ''; renderSettings();
+  try {
+    const status = await updateRequest('/api/settings/updates', {method: 'PATCH', body: JSON.stringify({auto_update: choice})});
+    if (generation !== updates.generation) return;
+    acceptUpdateStatus(status); updates.preference = Boolean(status.auto_update);
+    updates.savedMessage = status.auto_update ? '已保存，自动更新已开启。' : '已保存，自动更新已关闭。';
+    toast(updates.savedMessage);
+  } catch (error) { if (generation === updates.generation) handleUpdateError(error); }
+  finally { if (generation === updates.generation) { updates.busy = false; renderSettings(); scheduleUpdatePoll(); } }
+}
+function confirmUpdateInstall() {
+  const status = state.updates.status;
+  if (!status?.available || !status.update_available || state.updates.busy || updateBusy() || !/^\d+\.\d+\.\d+$/.test(status.latest_version || '')) return;
+  openModal('update-modal', `<form id="update-install-form" data-version="${esc(status.latest_version)}">${modalHeader('确认更新程序', 'update-modal-title')}<div class="modal-body"><div class="update-confirm-version"><span>当前 ${esc(status.current_version)}</span>${icon('arrow')}<strong>新版 ${esc(status.latest_version)}</strong></div><p>开始后会下载新版，自动备份家庭档案，再安装并检查服务。物品录入会短暂停用，页面会自动等待重新连接。</p><p>密码、AI 配置和数据会保留。如果新版运行失败，更新服务会尝试恢复原版本和数据。</p><p class="help-text">请保持 NAS 开机。开始后的这次更新需要完成，关闭自动更新只影响之后的更新。</p><p class="error-banner form-error" hidden role="alert"></p></div><div class="modal-footer"><button class="button secondary" type="button" data-action="close-modal">暂不更新</button><button class="button primary" type="submit">确认更新到 ${esc(status.latest_version)}</button></div></form>`);
+}
+async function installUpdate(form) {
+  const updates = state.updates;
+  if (updates.busy || updateBusy()) return;
+  if (form.dataset.version !== updates.status?.latest_version || !updates.status?.update_available) { $('update-modal').close(); toast('可安装版本已变化，请重新检查更新。', true); await loadUpdateStatus(); renderSettings(); return; }
+  const generation = updates.generation;
+  ++updates.sequence;
+  updates.busy = true; updates.inFlight = true;
+  const button = form.querySelector('[type="submit"]'); button.disabled = true;
+  const errorElement = form.querySelector('.form-error'); errorElement.hidden = true;
+  try {
+    const status = await updateRequest('/api/settings/updates/install', {method: 'POST', body: JSON.stringify({confirmed: true, version: form.dataset.version})});
+    if (generation !== updates.generation) return;
+    acceptUpdateStatus(status); $('update-modal').close(); toast('更新已安排，可在设置页查看进度。');
+  } catch (error) {
+    if (generation !== updates.generation) return;
+    if (error.status && error.status !== 503 && error.status !== 401) updates.inFlight = UPDATE_RUNNING.has(updates.status?.phase);
+    handleUpdateError(error);
+    if (updates.offline) { $('update-modal').close(); updates.error = '暂未收到更新结果，正在重新核对进度。请勿重复提交更新。'; }
+    else { errorElement.textContent = error.message; errorElement.hidden = false; }
+  } finally { if (generation === updates.generation) { updates.busy = false; button.disabled = false; renderSettings(); scheduleUpdatePoll(); } }
+}
 async function refreshPage(showLoading = true) {
   const token = ++state.renderToken;
   $('page-error').hidden = true;
@@ -156,6 +309,7 @@ async function refreshPage(showLoading = true) {
     else if (state.route === 'locations') { state.locations = await api('/api/locations'); if (token !== state.renderToken) return; renderLocations(); }
     else if (state.route === 'categories') { state.categories = await api('/api/categories'); if (token !== state.renderToken) return; renderCategories(); }
     else if (state.route === 'history') { const logs = await api('/api/logs?limit=200'); if (token !== state.renderToken) return; renderHistory(logs); }
+    else if (state.route === 'settings') { await loadUpdateStatus(); if (token !== state.renderToken) return; renderSettings(); }
   } catch (error) { if (token !== state.renderToken) return; showError(error); $('page-view').innerHTML = empty('暂时无法读取数据', '请检查 NAS 服务是否运行，稍后重新连接。', 'retry', '重新连接', 'refresh'); }
 }
 function navigate(route) { if (location.hash === `#${route}`) { state.route = route; refreshPage(); } else location.hash = route; }
@@ -391,25 +545,32 @@ async function toggleRecording() {
   } catch (error) { stream?.getTracks().forEach(track => track.stop()); state.ai.recording = false; toast(error.name === 'NotAllowedError' ? '麦克风权限未开启。请允许录音，或使用手机键盘语音输入。' : '无法开始录音，请检查麦克风或使用手机键盘语音输入。', true); renderAI(); }
 }
 
-function showLogin() { stopRecording(true); state.ai.generation++; state.ai.busy = false; state.ai.transcribing = false; state.ai.messages = []; state.ai.input = ''; document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close()); $('app-shell').hidden = true; $('login-view').hidden = false; document.querySelector('#login-form input').focus(); }
+function showLogin() { clearTimeout(updatePollTimer); updatePollTimer = null; state.updates.generation++; state.updates.status = null; state.updates.preference = null; state.updates.polling = false; state.updates.busy = false; state.updates.inFlight = false; state.updates.offline = false; state.updates.error = ''; state.updates.savedMessage = ''; state.updates.needsReload = false; state.updates.reauthenticate = false; state.updates.disconnectedSince = null; $('update-notice').hidden = true; stopRecording(true); state.ai.generation++; state.ai.busy = false; state.ai.transcribing = false; state.ai.messages = []; state.ai.input = ''; document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close()); $('app-shell').hidden = true; $('login-view').hidden = false; document.querySelector('#login-form input').focus(); }
 async function bootstrap() {
   try {
     const auth = await api('/api/auth'); state.authRequired = auth.auth_required;
     if (!auth.authenticated) { showLogin(); return; }
     $('app-shell').hidden = false; $('login-view').hidden = true;
     const [meta, locations, categories, aiStatus] = await Promise.all([api('/api/meta'), api('/api/locations'), api('/api/categories'), api('/api/ai/status').catch(() => ({enabled: false, voice_enabled: false}))]);
-    state.categories = categories; state.timezone = meta.timezone; state.locations = locations; state.ai.status = aiStatus;
+    state.categories = categories; state.timezone = meta.timezone; if (!state.appVersion) state.appVersion = meta.version || ''; state.locations = locations; state.ai.status = aiStatus;
     const deepLink = new URLSearchParams(location.search).get('location');
     if (deepLink && /^\d+$/.test(deepLink)) { state.filters.location_id = deepLink; state.selectedLocation = Number(deepLink); state.route = 'items'; history.replaceState(null, '', `${location.pathname}?location=${encodeURIComponent(deepLink)}#items`); }
     else state.route = ROUTES[location.hash.slice(1)] ? location.hash.slice(1) : 'dashboard';
     await refreshPage();
+    if (state.route !== 'settings') await loadUpdateStatus();
   } catch (error) { showError(error); setNavigation(); $('page-view').innerHTML = empty('暂时无法连接家庭档案', '请检查服务是否启动，再重新连接。', 'retry', '重新连接', 'refresh'); }
 }
-window.addEventListener('hashchange', () => { if (state.ai.recording) stopRecording(true); state.route = ROUTES[location.hash.slice(1)] ? location.hash.slice(1) : 'dashboard'; refreshPage(); });
+window.addEventListener('hashchange', () => { if (state.ai.recording) stopRecording(true); state.route = ROUTES[location.hash.slice(1)] ? location.hash.slice(1) : 'dashboard'; refreshPage(); scheduleUpdatePoll(); });
 document.addEventListener('click', async event => {
   const target = event.target.closest('[data-action]'); if (!target || target.disabled) return;
   const action = target.dataset.action; const id = Number(target.dataset.id);
   if (action === 'close-modal') { target.closest('dialog')?.close(); return; }
+  if (action === 'update-settings') { navigate('settings'); return; }
+  if (action === 'update-check') { await checkUpdates(); return; }
+  if (action === 'update-reconnect') { await loadUpdateStatus(); renderSettings(); return; }
+  if (action === 'update-install') { confirmUpdateInstall(); return; }
+  if (action === 'update-reload') { location.reload(); return; }
+  if (action === 'update-login') { showLogin(); return; }
   if (action === 'add-category') { openCategoryForm(); return; }
   if (action === 'edit-category') { openCategoryForm(id); return; }
   if (action === 'delete-category') { confirmDeleteCategory(id); return; }
@@ -445,6 +606,7 @@ document.addEventListener('input', event => { if (event.target.id === 'ai-messag
 window.addEventListener('pagehide', () => stopRecording(true));
 document.addEventListener('change', event => {
   const target = event.target;
+  if (target.id === 'auto-update') { state.updates.preference = target.checked; state.updates.savedMessage = ''; renderSettings(); $('auto-update')?.focus({preventScroll: true}); return; }
   if (target.dataset.filter) { state.filters[target.dataset.filter] = target.value; if (target.dataset.filter === 'category_id') state.filters.category = ''; refreshPage(); }
   if (target.id === 'item-photo' && target.files[0]) {
     const file = target.files[0];
@@ -457,6 +619,8 @@ document.addEventListener('submit', async event => {
   const form = event.target; if (!(form instanceof HTMLFormElement)) return;
   event.preventDefault();
   if (form.id === 'ai-form') { await submitAI(form); return; }
+  if (form.id === 'update-preference-form') { await saveUpdatePreference(); return; }
+  if (form.id === 'update-install-form') { await installUpdate(form); return; }
   if (form.id === 'search-form') {
     const query = String(new FormData(form).get('query') || '').trim(); state.filters.q = query;
     try { if (query) await post('/api/search', {query}); await refreshPage(); } catch (error) { toast(error.message, true); }

@@ -1,5 +1,10 @@
 # HomeStorage API
 
+Authenticated settings and controlled container updates are documented in
+[UPDATE_CONTRACT.md](UPDATE_CONTRACT.md). Automatic installation is off by default;
+checking and installing updates are separate actions, and manual installation requires
+the exact checked version and explicit confirmation.
+
 Category identities, archives and restricted AI endpoints are documented in
 [FEATURES_V2.md](FEATURES_V2.md). The endpoints below remain compatible with v1.
 Items additionally return `category_id` and nullable `archived_at`; default inventory

@@ -22,12 +22,16 @@ services:
       # 语音服务可独立配置；留空则使用上面的聊天服务地址和密钥。
       AI_TRANSCRIPTION_BASE_URL: ""
       AI_TRANSCRIPTION_API_KEY: ""
+      UPDATE_SERVICE_URL: "http://updater:9080"
     command:
       - sh
       - -c
       - ': "$${HOME_STORAGE_PASSWORD:?请在Compose中填写HOME_STORAGE_PASSWORD}"; exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers 1 --no-proxy-headers'
     volumes:
       - homestorage_data:/data
+      - homestorage_update_state:/run/homestorage-update:ro
+    labels:
+      io.homestorage.role: app
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
@@ -40,7 +44,49 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+  updater:
+    labels:
+      io.homestorage.role: updater
+    # 使用上面 homestorage 首次构建的同一镜像，不从 Docker Hub 拉取。
+    image: homestorage:local
+    pull_policy: never
+    depends_on:
+      homestorage:
+        condition: service_started
+    restart: unless-stopped
+    user: "0:0"
+    command: ["uvicorn", "updater.main:app", "--host", "0.0.0.0", "--port", "9080", "--workers", "1", "--no-proxy-headers"]
+    environment:
+      APP_TIMEZONE: Asia/Shanghai
+      APP_UID: "1000"
+      APP_GID: "1000"
+      # 公开仓库留空；私有仓库填仅本仓库 Contents:read 的细粒度 token。
+      UPDATE_GITHUB_TOKEN: ""
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - homestorage_data:/app-data
+      - homestorage_update_state:/state
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "from pathlib import Path; import urllib.request; r=urllib.request.Request('http://127.0.0.1:9080/v1/status',headers={'Authorization':'Bearer '+Path('/state/token').read_text().strip()}); urllib.request.urlopen(r,timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   homestorage_data:
     name: homestorage_data
+  homestorage_update_state:
+    name: homestorage_update_state

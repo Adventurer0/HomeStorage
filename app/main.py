@@ -27,6 +27,8 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, ValidationError, field_validator
 
 from .db import DEFAULT_CATEGORIES, connect, initialize, transaction
+from .updates import build_updates_router, maintenance_active, update_state_dir
+from .version import runtime_revision, runtime_version
 
 
 CATEGORIES = DEFAULT_CATEGORIES
@@ -303,7 +305,10 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
         application.state.session_key = hmac.digest(key, configured_password.encode("utf-8"), "sha256")
         yield
 
-    application = FastAPI(title="HomeStorage", version="2.0.0", lifespan=lifespan)
+    current_version = runtime_version()
+    current_revision = runtime_revision()
+    updates_path = update_state_dir()
+    application = FastAPI(title="HomeStorage", version=current_version, lifespan=lifespan)
     application.state.data_dir = data_path
     application.state.db_path = data_path / "homestorage.sqlite3"
 
@@ -342,6 +347,15 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
         protected = request.url.path.startswith(("/api/", "/uploads/"))
         if protected and request.url.path not in {"/api/auth", "/api/login", "/api/logout"} and not authenticated(request):
             return JSONResponse({"detail": "请先登录"}, status_code=401)
+        update_controls = request.url.path in {
+            "/api/settings/updates", "/api/settings/updates/check", "/api/settings/updates/install",
+        }
+        if (
+            request.method not in {"GET", "HEAD", "OPTIONS"}
+            and request.url.path not in {"/api/login", "/api/logout"}
+            and not update_controls and maintenance_active(updates_path)
+        ):
+            return JSONResponse({"detail": "系统正在备份或更新，请稍后再修改数据。"}, status_code=503)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "same-origin"
@@ -391,7 +405,10 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
 
     @application.get("/api/meta")
     def meta(database: Database):
-        return {"categories": [row["name"] for row in list_categories(database) if row["active"]], "timezone": timezone_name}
+        return {
+            "categories": [row["name"] for row in list_categories(database) if row["active"]],
+            "timezone": timezone_name, "version": current_version, "revision": current_revision,
+        }
 
     @application.get("/api/categories")
     def categories(database: Database):
@@ -824,6 +841,10 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
         "actor": ai_actor,
         "timezone": timezone_name,
     }))
+    application.include_router(build_updates_router(
+        current_version=current_version, current_revision=current_revision,
+        password_required=bool(configured_password), state_dir=updates_path,
+    ))
 
     application.mount("/static", StaticFiles(directory=STATIC_DIR, check_dir=False), name="static")
     return application
