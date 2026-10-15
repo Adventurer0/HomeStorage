@@ -164,27 +164,63 @@ def require_row(connection, table, row_id):
 
 def location_tree(connection):
     rows = {row["id"]: dict(row) for row in connection.execute("SELECT * FROM locations ORDER BY id")}
-
-    def path(location_id):
-        row = rows[location_id]
-        return path(row["parent_id"]) + " / " + row["name"] if row["parent_id"] else row["name"]
-
-    for location_id, row in rows.items():
-        row["path"] = path(location_id)
+    for location_id in rows:
+        pending = []
+        visited = set()
+        ancestor = location_id
+        while ancestor is not None and "path" not in rows[ancestor]:
+            if ancestor in visited:
+                fail("位置层级数据无效，请检查数据备份", 503)
+            visited.add(ancestor)
+            pending.append(ancestor)
+            ancestor = rows[ancestor]["parent_id"]
+        prefix = rows[ancestor]["path"] if ancestor is not None else ""
+        for pending_id in reversed(pending):
+            row = rows[pending_id]
+            prefix = f"{prefix} / {row['name']}" if row["parent_id"] is not None else row["name"]
+            row["path"] = prefix
     return rows
 
 
 def descendants(tree, location_id):
     if location_id not in tree:
         fail("位置不存在", 404)
+    children = {}
+    for key, row in tree.items():
+        children.setdefault(row["parent_id"], []).append(key)
     result = {location_id}
     pending = [location_id]
     while pending:
         parent_id = pending.pop()
-        children = [key for key, row in tree.items() if row["parent_id"] == parent_id]
-        result.update(children)
-        pending.extend(children)
+        for child_id in children.get(parent_id, ()):
+            if child_id not in result:
+                result.add(child_id)
+                pending.append(child_id)
     return result
+
+
+def location_item_counts(connection, tree):
+    """Count each active record once, then roll child totals up to their parents."""
+    counts = dict.fromkeys(tree, 0)
+    for row in connection.execute(
+        "SELECT location_id,COUNT(*) AS item_count FROM items "
+        "WHERE archived_at IS NULL AND status IN ('in_stock','in_use','lent') GROUP BY location_id"
+    ):
+        counts[row["location_id"]] = row["item_count"]
+    remaining_children = dict.fromkeys(tree, 0)
+    for row in tree.values():
+        if row["parent_id"] is not None:
+            remaining_children[row["parent_id"]] += 1
+    pending = [key for key, count in remaining_children.items() if not count]
+    while pending:
+        location_id = pending.pop()
+        parent_id = tree[location_id]["parent_id"]
+        if parent_id is not None:
+            counts[parent_id] += counts[location_id]
+            remaining_children[parent_id] -= 1
+            if not remaining_children[parent_id]:
+                pending.append(parent_id)
+    return counts
 
 
 def serialize_location(connection, location_id):
@@ -467,14 +503,8 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
     @application.get("/api/locations")
     def locations(database: Database):
         tree = location_tree(database)
-        quantities = {}
-        for item in database.execute("SELECT location_id, status FROM items WHERE archived_at IS NULL"):
-            if item["status"] in ACTIVE:
-                quantities[item["location_id"]] = quantities.get(item["location_id"], 0) + 1
-        return [
-            {**row, "item_count": sum(quantities.get(child, 0) for child in descendants(tree, key))}
-            for key, row in tree.items()
-        ]
+        counts = location_item_counts(database, tree)
+        return [{**row, "item_count": counts[key]} for key, row in tree.items()]
 
     @application.post("/api/locations", status_code=201)
     def create_location(body: LocationCreate, database: Database):
@@ -536,18 +566,44 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
         ).save(output)
         return Response(output.getvalue(), media_type="image/svg+xml")
 
-    def all_items(database, include_archived=False):
-        tree = location_tree(database)
+    def all_items(
+        database, include_archived=False, *, tree=None, location_ids=None,
+        category=None, category_id=None, status=None, archived_only=False,
+    ):
+        if tree is None:
+            tree = location_tree(database)
         calendar_day = today()
-        where = "" if include_archived else " WHERE archived_at IS NULL"
-        return [serialize_item(row, tree, calendar_day) for row in database.execute(f"SELECT * FROM items{where} ORDER BY id DESC")]
+        conditions = []
+        parameters = []
+        if not include_archived:
+            conditions.append("archived_at IS NULL")
+        elif archived_only:
+            conditions.append("archived_at IS NOT NULL")
+        if location_ids is not None:
+            conditions.append(f"location_id IN ({','.join('?' for _ in location_ids)})")
+            parameters.extend(location_ids)
+        for key, value in (("category", category), ("category_id", category_id), ("status", status)):
+            if value is not None and (value or key == "category_id"):
+                conditions.append(f"{key}=?")
+                parameters.append(value)
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        return [
+            serialize_item(row, tree, calendar_day)
+            for row in database.execute(f"SELECT * FROM items{where} ORDER BY id DESC", parameters)
+        ]
 
     def matched(items, query):
         terms = query.casefold().split()
-        return [item for item in items if all(
-            term in " ".join(str(item[key] or "") for key in ("name", "brand", "model", "tags", "notes", "location_path")).casefold()
-            for term in terms
-        )]
+        if not terms:
+            return items
+        result = []
+        for item in items:
+            text = " ".join(
+                str(item[key] or "") for key in ("name", "brand", "model", "tags", "notes", "location_path")
+            ).casefold()
+            if all(term in text for term in terms):
+                result.append(item)
+        return result
 
     @application.get("/api/items")
     def items(
@@ -555,19 +611,14 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
         category: str | None = None, status: str | None = None, expiry: Literal["soon", "expired"] | None = None,
         category_id: int | None = None, archived: Literal["false", "true", "all"] = "false",
     ):
-        result = matched(all_items(database, include_archived=archived != "false"), q)
-        if archived == "true":
-            result = [item for item in result if item["archived_at"] is not None]
-        if location_id is not None:
-            valid_ids = descendants(location_tree(database), location_id)
-            result = [item for item in result if item["location_id"] in valid_ids]
-        if category:
-            result = [item for item in result if item["category"] == category]
+        tree = location_tree(database)
+        valid_ids = descendants(tree, location_id) if location_id is not None else None
         if category_id is not None:
             require_row(database, "categories", category_id)
-            result = [item for item in result if item["category_id"] == category_id]
-        if status:
-            result = [item for item in result if item["status"] == status]
+        result = matched(all_items(
+            database, include_archived=archived != "false", tree=tree, location_ids=valid_ids,
+            category=category, category_id=category_id, status=status, archived_only=archived == "true",
+        ), q)
         if expiry:
             result = [item for item in result if item["expiry_status"] == expiry and item["status"] in ACTIVE]
         return result

@@ -4,7 +4,7 @@ import os
 import re
 
 
-VERSION = "2.1.1"
+VERSION = "2.2.0"
 REVISION = "local"
 VERSION_PATTERN = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
 

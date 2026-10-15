@@ -30,6 +30,7 @@ const ICONS = {
   tags: '<path d="M3 3h8l10 10-8 8L3 11V3Z"/><circle cx="7" cy="7" r="1"/>',
   refresh: '<path d="M20 8a9 9 0 0 0-15-3L3 8m0-5v5h5m-4 8a9 9 0 0 0 15 3l2-3m0 5v-5h-5"/>',
   settings: '<path d="m9 3-1 3-3 1-2 3 2 2v3l3 2 1 4h6l1-4 3-2v-3l2-2-2-3-3-1-1-3H9Z"/><circle cx="12" cy="12" r="3"/>',
+  list: '<path d="M9 5h12M9 12h12M9 19h12"/><circle cx="4" cy="5" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="19" r="1"/>',
 };
 const icon = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ICONS.box}</svg>`;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
@@ -40,6 +41,16 @@ const LOCATION_TYPES = {home: '家庭', room: '房间', shelf: '货架 / 柜子'
 const ROUTES = {dashboard: ['家庭概览', '好好收纳，也好好生活。', 'grid', '概览'], items: ['物品档案', '找得到，用得好。每件物品都有迹可循。', 'box', '物品'], locations: ['收纳空间', '从房间到收纳箱，把家的每个角落串起来。', 'pin', '位置'], expiry: ['到期提醒', '提前看一眼，少一点浪费，多一点安心。', 'clock', '到期'], categories: ['分类管理', '按家里的习惯分类，让每一件物品都好找。', 'tags', '分类'], history: ['操作记录', '每一次取放、移动与补充，都有记录。', 'history', '记录'], settings: ['应用设置', '配置收纳助手，选择程序更新时间。', 'settings', '设置']};
 const state = {route: 'dashboard', locations: [], categories: [], items: [], dashboard: null, logs: [], timezone: 'Asia/Shanghai', appVersion: '', updates: {status: null, preference: null, busy: false, polling: false, generation: 0, sequence: 0, inFlight: false, offline: false, disconnectedSince: null, reauthenticate: false, error: '', savedMessage: '', needsReload: false}, ai: {status: null, messages: [], input: '', generation: 0, busy: false, recording: false, transcribing: false}, filters: {q: '', location_id: '', category: '', category_id: '', status: '', archived: 'false'}, expiry: 'soon', selectedLocation: null, detail: null, authRequired: false, renderToken: 0};
 const $ = id => document.getElementById(id);
+state.inventory = {view: 'grid', sort: 'recent', visible: 48};
+try {
+  const preference = JSON.parse(localStorage.getItem('homestorage.inventory-view') || 'null');
+  if (['grid', 'list'].includes(preference?.view)) state.inventory.view = preference.view;
+  if (['recent', 'name', 'quantity', 'expiry'].includes(preference?.sort)) state.inventory.sort = preference.sort;
+} catch (_) { /* View preferences are optional when browser storage is unavailable. */ }
+function rememberInventoryView() {
+  try { localStorage.setItem('homestorage.inventory-view', JSON.stringify({view: state.inventory.view, sort: state.inventory.sort})); }
+  catch (_) { /* Inventory remains usable in private or restricted browsers. */ }
+}
 state.aiSettings = {status: null, loading: false, busy: false, forbidden: false, generation: 0, sequence: 0, error: '', message: ''};
 // Retain the live form when navigating; keys exist only in password inputs.
 let aiSettingsPanel = null;
@@ -63,7 +74,13 @@ function toast(message, error = false) {
   const element = document.createElement('div');
   element.className = `toast${error ? ' toast-error' : ''}`;
   element.textContent = message;
-  $('toasts').append(element);
+  const container = $('toasts');
+  for (const previous of [...container.children]) {
+    if (previous.textContent === element.textContent && previous.className === element.className) previous.remove();
+  }
+  container.append(element);
+  const maximum = window.matchMedia('(max-width: 760px)').matches ? 2 : 3;
+  while (container.children.length > maximum) container.firstElementChild.remove();
   setTimeout(() => element.remove(), 4500);
 }
 function showError(error) { $('page-error').textContent = error.message || '暂时无法连接服务，请重试。'; $('page-error').hidden = false; }
@@ -91,8 +108,8 @@ function option(value, label, selected) { return `<option value="${esc(value)}"$
 function categoryOptions(selected) { return state.categories.filter(cat => cat.active || String(cat.id) === String(selected)).map(cat => option(cat.id, `${cat.name}${cat.active ? '' : '（已停用）'}`, selected)).join(''); }
 function hasFilters() { return Object.entries(state.filters).some(([key, value]) => key !== 'archived' ? Boolean(value) : value !== 'false'); }
 function locationOptions(selected, includeEmpty = true) { return `${includeEmpty ? option('', '请选择收纳位置', selected) : ''}${state.locations.map(loc => option(loc.id, loc.path, selected)).join('')}`; }
-function empty(title, subtitle, action = 'add-item', label = '登记第一件物品', symbol = 'box') { return `<div class="empty-state"><div class="empty-icon">${icon(symbol)}</div><h3>${esc(title)}</h3><p>${esc(subtitle)}</p>${action ? `<button class="button primary" data-action="${action}">${icon('plus')}${esc(label)}</button>` : ''}</div>`; }
-function loading() { return `<div class="loading-state"><span class="spinner"></span><p>正在读取家庭档案…</p></div>`; }
+function empty(title, subtitle, action = 'add-item', label = '登记第一件物品', symbol = 'box') { return `<div class="empty-state"><div class="empty-icon">${icon(symbol)}</div><h3>${esc(title)}</h3><p>${esc(subtitle)}</p>${action ? `<button class="button primary" data-action="${action}">${icon(['retry', 'clear-filters'].includes(action) ? 'refresh' : 'plus')}${esc(label)}</button>` : ''}</div>`; }
+function loading() { return `<div class="loading-state" role="status"><span class="spinner" aria-hidden="true"></span><p>正在读取家庭档案…</p></div>`; }
 function setNavigation() {
   const links = Object.entries(ROUTES).map(([key, info]) => `<a href="#${key}" class="nav-link${state.route === key ? ' active' : ''}"${state.route === key ? ' aria-current="page"' : ''}>${icon(info[2], 'nav-icon')}<span>${esc(info[0])}</span>${key === 'expiry' && state.dashboard && state.dashboard.soon_count + state.dashboard.expired_count > 0 ? `<span class="nav-count">${number(state.dashboard.soon_count + state.dashboard.expired_count)}</span>` : ''}</a>`).join('');
   $('desktop-nav').innerHTML = links;
@@ -105,6 +122,8 @@ function setNavigation() {
   $('add-item-button').hidden = state.route === 'settings';
   $('logout-button').innerHTML = icon('logout');
   $('logout-button').hidden = !state.authRequired;
+  $('mobile-logout-button').innerHTML = icon('logout');
+  $('mobile-logout-button').hidden = !state.authRequired;
   renderUpdateNotice();
 }
 
@@ -118,16 +137,17 @@ function logRow(log, compact = false) {
 function expiryRow(item) { return `<button class="list-row expiry-row" data-action="detail" data-id="${item.id}"><span class="list-icon ${item.expiry_status === 'expired' ? 'expiry-expired' : 'expiry-soon'}">${icon('clock')}</span><span class="list-content"><span class="list-title">${esc(item.name)}</span><span class="list-subtitle">${esc(item.location_path)}</span></span><span class="list-end">${expiryBadge(item)}<span class="expiry-date">${date(item.expires_on)}</span></span></button>`; }
 function renderDashboard(data) {
   const metrics = [
-    ['box', data.total_items, '物品种类', '每一件，都有记录', 'green'],
-    ['pin', data.location_count, '收纳位置', '家的空间，一目了然', 'sand'],
-    ['refresh', data.in_use_count, '正在使用', '取放状态，随时追踪', 'blue'],
-    ['clock', data.soon_count + data.expired_count, '需要关注', data.expired_count ? `${data.expired_count} 件已过期` : '留意物品有效期', 'orange'],
+    ['box', data.total_items, '物品种类', '每一件，都有记录', 'green', 'all', '查看物品'],
+    ['pin', data.location_count, '收纳位置', '家的空间，一目了然', 'sand', 'locations', '查看空间'],
+    ['refresh', data.in_use_count, '正在使用', '取放状态，随时追踪', 'blue', 'in_use', '查看物品'],
+    ['clock', data.soon_count + data.expired_count, '需要关注', data.expired_count ? `${data.expired_count} 件已过期` : '留意物品有效期', 'orange', 'attention', '查看提醒'],
   ];
-  $('page-view').innerHTML = `<div class="hero-card"><div class="hero-copy"><span class="kicker">A LITTLE ORDER. A BETTER LIFE.</span><h2>每一件物品，<br>都有自己的位置。</h2><p>记录、寻找、取放。<br>把生活的琐碎，收纳成家的秩序。</p><div class="hero-tags"><span>${icon('shield')} 数据留在家中</span><span>${icon('history')} 每次取放可追溯</span></div></div><div class="hero-visual">${illustration}</div></div><div class="metric-grid">${metrics.map(([symbol, value, label, sub, color]) => `<div class="metric-card"><span class="metric-icon metric-${color}">${icon(symbol)}</span><span class="metric-value">${number(value)}<span>${symbol === 'pin' ? '处' : '种'}</span></span><span class="metric-label">${label}</span><span class="metric-trend">${esc(sub)}</span></div>`).join('')}</div>${aiPanel()}<div class="dashboard-grid"><section class="panel"><div class="panel-header"><div><h2 class="panel-title">${icon('clock')} 到期提醒</h2><p class="panel-subtitle">留意保质期，让每一份物品物尽其用</p></div><a class="text-link" href="#expiry">查看全部 ${icon('arrow')}</a></div><div class="panel-body">${data.expiring_items.length ? data.expiring_items.slice(0, 4).map(expiryRow).join('') : empty('暂时没有到期提醒', '填写物品有效期，临近到期时会在这里提醒你。', null, '', 'leaf')}</div></section><section class="panel"><div class="panel-header"><div><h2 class="panel-title">${icon('history')} 最近动态</h2><p class="panel-subtitle">看看家里物品的新变化</p></div><a class="text-link" href="#history">全部记录 ${icon('arrow')}</a></div><div class="panel-body">${data.recent_logs.length ? data.recent_logs.slice(0, 5).map(log => logRow(log, true)).join('') : empty('你的家庭档案，从这里开始', '登记第一件物品，它的每一次变化都会被记住。')}</div></section></div>${data.total_items === 0 ? `<section class="getting-started"><div>${icon('pin')}<span><strong>给物品一个准确的地址</strong><span>先添加房间、柜子或收纳箱，再开始登记物品。</span></span></div><button class="button secondary" data-action="add-location">${icon('plus')} 添加收纳位置</button></section>` : ''}`;
+  $('page-view').innerHTML = `<section class="hero-card dashboard-hero" aria-labelledby="dashboard-hero-title"><div class="hero-copy"><span class="kicker hero-kicker">A LITTLE ORDER. A BETTER LIFE.</span><h2 id="dashboard-hero-title">每一件物品，<br>都有自己的位置。</h2><p>少一点翻找，多一点从容。<br>记录家中物品，让需要的东西触手可及。</p><div class="hero-actions"><button class="button primary" data-action="browse-items">${icon('search')} 查找家中物品</button><button class="button secondary" data-action="add-item">${icon('plus')} 登记物品</button></div><div class="hero-tags"><span>${icon('shield')} 数据留在家中</span><span>${icon('history')} 每次取放可追溯</span></div></div><div class="hero-visual">${illustration}</div></section><div class="metric-grid">${metrics.map(([symbol, value, label, sub, color, valueFilter, link]) => `<button type="button" class="metric-card stat-card" data-action="stat-filter" data-value="${valueFilter}" aria-label="${label} ${number(value)}${symbol === 'pin' ? '处' : '种'}，${link}"><span class="metric-icon metric-${color}">${icon(symbol)}</span><span class="metric-value">${number(value)}<span>${symbol === 'pin' ? '处' : '种'}</span></span><span class="metric-label">${label}</span><span class="metric-trend">${esc(sub)}</span><span class="metric-link">${link} ${icon('arrow')}</span></button>`).join('')}</div>${aiPanel()}<div class="dashboard-grid"><section class="panel"><div class="panel-header"><div><h2 class="panel-title">${icon('clock')} 到期提醒</h2><p class="panel-subtitle">留意保质期，让每一份物品物尽其用</p></div><a class="text-link" href="#expiry">查看全部 ${icon('arrow')}</a></div><div class="panel-body">${data.expiring_items.length ? data.expiring_items.slice(0, 4).map(expiryRow).join('') : empty('暂时没有到期提醒', '填写物品有效期，临近到期时会在这里提醒你。', null, '', 'leaf')}</div></section><section class="panel"><div class="panel-header"><div><h2 class="panel-title">${icon('history')} 最近动态</h2><p class="panel-subtitle">看看家里物品的新变化</p></div><a class="text-link" href="#history">全部记录 ${icon('arrow')}</a></div><div class="panel-body">${data.recent_logs.length ? data.recent_logs.slice(0, 5).map(log => logRow(log, true)).join('') : empty('你的家庭档案，从这里开始', '登记第一件物品，它的每一次变化都会被记住。')}</div></section></div>${data.total_items === 0 ? `<section class="getting-started"><div>${icon('pin')}<span><strong>给物品一个准确的地址</strong><span>先添加房间、柜子或收纳箱，再开始登记物品。</span></span></div><button class="button secondary" data-action="add-location">${icon('plus')} 添加收纳位置</button></section>` : ''}`;
 }
 function itemCard(item) {
   const photo = imageUrl(item.image_url);
-  return `<button class="item-card" data-action="detail" data-id="${item.id}"><span class="item-photo">${photo ? `<img src="${esc(photo)}" alt="${esc(item.name)}的照片" loading="lazy">` : `<span class="item-photo-placeholder">${icon('box')}<span>未添加照片</span></span>`}<span class="item-photo-status">${badge(item.status)}${archiveBadge(item)}</span></span><span class="item-body"><span class="item-meta">${esc(item.category)}</span><span class="item-title">${esc(item.name)}</span><span class="item-path">${icon('pin')}${esc(item.location_path)}</span>${expiryBadge(item)}<span class="item-bottom"><span class="item-quantity"><strong>${number(item.quantity)}</strong> ${esc(item.unit)}</span><span class="item-date">${date(item.stored_date)} 入库</span></span></span></button>`;
+  const description = [item.brand, item.model].filter(Boolean).join(' · ');
+  return `<button class="item-card" data-action="detail" data-id="${item.id}"><span class="item-photo">${photo ? `<img src="${esc(photo)}" alt="${esc(item.name)}的照片" loading="lazy" decoding="async">` : `<span class="item-photo-placeholder">${icon('box')}<span>未添加照片</span></span>`}<span class="item-photo-status">${badge(item.status)}${archiveBadge(item)}</span></span><span class="item-body"><span class="item-meta-wrap"><span class="item-meta">${esc(item.category || '未分类')}</span></span><span class="item-title" title="${esc(item.name)}">${esc(item.name)}</span>${description ? `<span class="item-description" title="${esc(description)}">${esc(description)}</span>` : ''}<span class="item-path" title="${esc(item.location_path)}">${icon('pin')}${esc(item.location_path)}</span>${expiryBadge(item)}<span class="item-bottom"><span class="item-quantity"><strong>${number(item.quantity)}</strong> ${esc(item.unit)}</span><span class="item-date">${date(item.stored_date)} 入库</span></span></span></button>`;
 }
 function itemFilters() {
   const f = state.filters;
@@ -135,13 +155,40 @@ function itemFilters() {
 }
 function renderItems(items) {
   const filtering = hasFilters();
-  $('page-view').innerHTML = `${itemFilters()}<div class="collection-heading"><span>共 <strong>${number(items.length)}</strong> 种物品</span><span class="muted">清晰的档案，安心的日常</span></div>${items.length ? `<div class="item-grid">${items.map(itemCard).join('')}</div>` : empty(filtering ? '没有找到匹配的物品' : '家里的宝贝，值得好好记住', filtering ? '换个关键词或清除筛选，再试一次。' : '从一件常用物品开始，拍张照，选个位置，建立你的家庭物品档案。', filtering ? 'clear-filters' : 'add-item', filtering ? '清除筛选' : '登记第一件物品')}`;
+  const sorted = [...items].sort((a, b) => {
+    if (state.inventory.sort === 'name') return String(a.name).localeCompare(String(b.name), 'zh-CN', {numeric: true}) || b.id - a.id;
+    if (state.inventory.sort === 'quantity') return b.quantity - a.quantity || b.id - a.id;
+    if (state.inventory.sort === 'expiry') return String(a.expires_on || '9999-12-31').localeCompare(String(b.expires_on || '9999-12-31')) || b.id - a.id;
+    return b.id - a.id;
+  });
+  const visible = sorted.slice(0, state.inventory.visible);
+  const more = items.length > 48 ? `<div class="inventory-more"><p class="help-text">已显示 ${number(visible.length)} / ${number(items.length)} 种物品</p>${visible.length < items.length ? `<button class="button secondary" type="button" data-action="inventory-more">${icon('plus')} 再显示 ${number(Math.min(48, items.length - visible.length))} 种物品</button>` : '<span class="help-text">已显示全部物品</span>'}</div>` : '';
+  $('page-view').innerHTML = `${itemFilters()}<div class="collection-heading inventory-toolbar"><span>${filtering ? '筛选结果 ·' : '全部档案 ·'} <strong>${number(items.length)}</strong> 种物品</span><div class="inventory-controls"><label class="sort-control"><span class="screen-reader">物品排序</span><select class="form-control sort-select" id="item-sort" aria-label="物品排序">${[['recent', '最近登记'], ['name', '名称排序'], ['quantity', '数量从多到少'], ['expiry', '到期日期从早到晚']].map(([value, label]) => option(value, label, state.inventory.sort)).join('')}</select></label><div class="view-switch" role="group" aria-label="物品显示方式">${[['grid', 'grid', '卡片视图'], ['list', 'list', '列表视图']].map(([value, symbol, label]) => `<button class="icon-button" type="button" data-action="inventory-view" data-value="${value}" aria-label="${label}" title="${label}" aria-pressed="${state.inventory.view === value}">${icon(symbol)}</button>`).join('')}</div></div></div>${items.length ? `<div class="item-grid${state.inventory.view === 'list' ? ' is-list' : ''}">${visible.map(itemCard).join('')}</div>${more}` : empty(filtering ? '没有找到匹配的物品' : '家里的宝贝，值得好好记住', filtering ? '换个关键词或清除筛选，再试一次。' : '从一件常用物品开始，拍张照，选个位置，建立你的家庭物品档案。', filtering ? 'clear-filters' : 'add-item', filtering ? '清除筛选' : '登记第一件物品')}`;
 }
 function renderExpiry(items) {
-  $('page-view').innerHTML = `<div class="tabs" role="tablist" aria-label="到期筛选"><button class="tab${state.expiry === 'soon' ? ' active' : ''}" role="tab" aria-selected="${state.expiry === 'soon'}" data-action="expiry-tab" data-value="soon">${icon('clock')} 即将到期</button><button class="tab${state.expiry === 'expired' ? ' active' : ''}" role="tab" aria-selected="${state.expiry === 'expired'}" data-action="expiry-tab" data-value="expired">${icon('alert')} 已经过期</button></div><p class="expiry-explanation">${state.expiry === 'soon' ? '按每件物品设置的提前提醒天数显示，包含今天到期的物品。' : '有效期早于今天的物品。请及时检查并处理。'} · 日期按 ${esc(state.timezone)} 计算</p>${items.length ? `<div class="item-grid">${items.map(itemCard).join('')}</div>` : empty(state.expiry === 'soon' ? '最近没有物品即将到期' : '目前没有已过期的物品', '填写食品、药品等物品的有效期，我们会在这里帮你留意。', null, '', 'leaf')}`;
+  const sorted = [...items].sort((a, b) => String(a.expires_on || '').localeCompare(String(b.expires_on || '')) || b.id - a.id);
+  $('page-view').innerHTML = `<div class="tabs" role="tablist" aria-label="到期筛选"><button id="expiry-tab-soon" class="tab${state.expiry === 'soon' ? ' active' : ''}" role="tab" aria-controls="expiry-results" tabindex="${state.expiry === 'soon' ? '0' : '-1'}" aria-selected="${state.expiry === 'soon'}" data-action="expiry-tab" data-value="soon">${icon('clock')} 即将到期</button><button id="expiry-tab-expired" class="tab${state.expiry === 'expired' ? ' active' : ''}" role="tab" aria-controls="expiry-results" tabindex="${state.expiry === 'expired' ? '0' : '-1'}" aria-selected="${state.expiry === 'expired'}" data-action="expiry-tab" data-value="expired">${icon('alert')} 已经过期</button></div><div id="expiry-results" role="tabpanel" aria-labelledby="expiry-tab-${state.expiry}"><p class="expiry-explanation">${state.expiry === 'soon' ? '按每件物品设置的提前提醒天数显示，包含今天到期的物品。' : '有效期早于今天的物品。请及时检查并处理。'} · 日期按 ${esc(state.timezone)} 计算</p>${items.length ? `<div class="item-grid">${sorted.map(itemCard).join('')}</div>` : empty(state.expiry === 'soon' ? '最近没有物品即将到期' : '目前没有已过期的物品', '填写食品、药品等物品的有效期，我们会在这里帮你留意。', null, '', 'leaf')}</div>`;
+}
+function locationAdjacency() {
+  const children = new Map();
+  for (const loc of state.locations) {
+    if (!children.has(loc.parent_id)) children.set(loc.parent_id, []);
+    children.get(loc.parent_id).push(loc);
+  }
+  return children;
 }
 function locationBranch(parentId, depth = 0) {
-  return state.locations.filter(loc => loc.parent_id === parentId).map(loc => `<div class="location-node"><button class="location-row${state.selectedLocation === loc.id ? ' active' : ''}" data-action="select-location" data-id="${loc.id}" style="--depth:${Math.min(depth, 12)}"><span class="location-icon">${icon(loc.type === 'home' ? 'home' : loc.type === 'room' ? 'pin' : 'package')}</span><span class="location-info"><strong>${esc(loc.name)}</strong><span>${esc(loc.code || LOCATION_TYPES[loc.type])}</span></span><span class="location-count">${number(loc.item_count)}</span>${icon('chevron')}</button>${locationBranch(loc.id, depth + 1)}</div>`).join('');
+  const children = locationAdjacency(), visited = new Set(), rows = [];
+  const stack = (children.get(parentId) || []).map(loc => ({loc, depth})).reverse();
+  while (stack.length) {
+    const current = stack.pop(), loc = current.loc;
+    if (visited.has(loc.id)) continue;
+    visited.add(loc.id);
+    rows.push(`<div class="location-node"><button class="location-row${state.selectedLocation === loc.id ? ' active' : ''}" data-action="select-location" data-id="${loc.id}" aria-pressed="${state.selectedLocation === loc.id}" style="--depth:${Math.min(current.depth, 12)}"><span class="location-icon">${icon(loc.type === 'home' ? 'home' : loc.type === 'room' ? 'pin' : 'package')}</span><span class="location-info"><strong>${esc(loc.name)}</strong><span>${esc(loc.code || LOCATION_TYPES[loc.type])}</span></span><span class="location-count">${number(loc.item_count)}</span>${icon('chevron')}</button></div>`);
+    const next = children.get(loc.id) || [];
+    for (let index = next.length - 1; index >= 0; index--) stack.push({loc: next[index], depth: current.depth + 1});
+  }
+  return rows.join('');
 }
 function renderLocations() {
   let loc = state.locations.find(value => value.id === state.selectedLocation) || state.locations[0];
@@ -444,22 +491,24 @@ async function installUpdate(form) {
 async function refreshPage(showLoading = true) {
   const token = ++state.renderToken;
   $('page-error').hidden = true;
+  $('page-view').setAttribute('aria-busy', 'true');
   setNavigation();
   if (showLoading && !(state.route === 'settings' && $('ai-settings-mount'))) $('page-view').innerHTML = loading();
   try {
     if (state.route === 'dashboard') { const data = await api('/api/dashboard'); if (token !== state.renderToken) return; state.dashboard = data; renderDashboard(data); setNavigation(); }
-    else if (state.route === 'items') { const params = new URLSearchParams(Object.entries(state.filters).filter(([,value]) => value)); const items = await api(`/api/items?${params}`); if (token !== state.renderToken) return; state.items = items; renderItems(items); }
+    else if (state.route === 'items') { const params = new URLSearchParams(Object.entries(state.filters).filter(([,value]) => value)); const items = await api(`/api/items?${params}`); if (token !== state.renderToken) return; state.items = items; state.inventory.visible = 48; renderItems(items); }
     else if (state.route === 'expiry') { const items = await api(`/api/items?expiry=${state.expiry}`); if (token !== state.renderToken) return; renderExpiry(items); }
     else if (state.route === 'locations') { state.locations = await api('/api/locations'); if (token !== state.renderToken) return; renderLocations(); }
     else if (state.route === 'categories') { state.categories = await api('/api/categories'); if (token !== state.renderToken) return; renderCategories(); }
     else if (state.route === 'history') { const logs = await api('/api/logs?limit=200'); if (token !== state.renderToken) return; renderHistory(logs); }
     else if (state.route === 'settings') { renderSettings(); await Promise.all([loadUpdateStatus(), loadAISettings(token)]); if (token !== state.renderToken) return; renderSettings(); }
   } catch (error) { if (token !== state.renderToken) return; showError(error); $('page-view').innerHTML = empty('暂时无法读取数据', '请检查 NAS 服务是否运行，稍后重新连接。', 'retry', '重新连接', 'refresh'); }
+  finally { if (token === state.renderToken) $('page-view').setAttribute('aria-busy', 'false'); }
 }
 function navigate(route) { if (location.hash === `#${route}`) { state.route = route; refreshPage(); } else location.hash = route; }
 async function refreshAfterMutation() { [state.locations, state.categories, state.dashboard] = await Promise.all([api('/api/locations'), api('/api/categories'), api('/api/dashboard')]); await refreshPage(false); }
-function modalHeader(title, id, subtitle = '') { return `<div class="modal-header"><div><h2 class="modal-title" id="${id}">${esc(title)}</h2>${subtitle ? `<p class="panel-subtitle">${esc(subtitle)}</p>` : ''}</div><button type="button" class="icon-button modal-close" data-action="close-modal" aria-label="关闭">${icon('close')}</button></div>`; }
-function openModal(id, content) { const dialog = $(id); dialog.innerHTML = content; if (!dialog.open) dialog.showModal(); return dialog; }
+function modalHeader(title, id, subtitle = '') { return `<div class="modal-header"><div><h2 class="modal-title" id="${id}" tabindex="-1">${esc(title)}</h2>${subtitle ? `<p class="panel-subtitle">${esc(subtitle)}</p>` : ''}</div><button type="button" class="icon-button modal-close" data-action="close-modal" aria-label="关闭">${icon('close')}</button></div>`; }
+function openModal(id, content) { const dialog = $(id); dialog.innerHTML = content; if (!dialog.open) dialog.showModal(); dialog.scrollTop = 0; dialog.querySelector('.modal-title')?.focus({preventScroll: true}); return dialog; }
 function field(label, name, value = '', type = 'text', extra = '', wide = false) { return `<label class="form-field${wide ? ' span-2' : ''}"><span class="field-label">${esc(label)}</span><input class="form-control" name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`; }
 function selectField(label, name, values, value = '', extra = '') { return `<label class="form-field"><span class="field-label">${esc(label)}</span><select class="form-control" name="${name}" ${extra}>${values.map(([key, text]) => option(key, text, value)).join('')}</select></label>`; }
 
@@ -524,8 +573,12 @@ async function submitAction(form) {
 function openLocationForm(id = null, parent = null) {
   const loc = state.locations.find(value => value.id === id) || {name: '', code: '', type: parent ? 'box' : 'room', parent_id: parent || state.locations.find(value => value.type === 'home')?.id || ''};
   const descendants = new Set(id ? [id] : []);
-  let previous;
-  do { previous = descendants.size; state.locations.forEach(value => { if (descendants.has(value.parent_id)) descendants.add(value.id); }); } while (descendants.size !== previous);
+  const children = locationAdjacency(), stack = id ? [id] : [];
+  while (stack.length) {
+    for (const child of children.get(stack.pop()) || []) {
+      if (!descendants.has(child.id)) { descendants.add(child.id); stack.push(child.id); }
+    }
+  }
   openModal('location-modal', `<form id="location-form" data-id="${id || ''}">${modalHeader(id ? '编辑收纳位置' : '添加收纳位置', 'location-modal-title', '从房间、柜子到收纳箱，建立清晰的位置层级。')}<div class="modal-body"><div class="form-grid">${field('位置名称 *', 'name', loc.name, 'text', 'required maxlength="120" placeholder="例如：书房工具柜"', true)}${field('位置编号', 'code', loc.code, 'text', 'maxlength="80" placeholder="例如：S-01"')}${selectField('位置类型', 'type', Object.entries(LOCATION_TYPES), loc.type)}<label class="form-field span-2"><span class="field-label">上级位置</span><select name="parent_id" class="form-control">${option('', '无上级位置（根位置）', loc.parent_id)}${state.locations.filter(value => !descendants.has(value.id)).map(value => option(value.id, value.path, loc.parent_id)).join('')}</select><span class="help-text">例如把“工具箱”放在“书房 / 工具柜”下面。</span></label></div><p class="error-banner form-error" hidden role="alert"></p></div><div class="modal-footer"><button type="button" class="button secondary" data-action="close-modal">取消</button><button type="submit" class="button primary">${icon('check')} 保存位置</button></div></form>`);
 }
 async function submitLocation(form) {
@@ -705,10 +758,30 @@ async function bootstrap() {
     if (state.route !== 'settings') await loadUpdateStatus();
   } catch (error) { showError(error); setNavigation(); $('page-view').innerHTML = empty('暂时无法连接家庭档案', '请检查服务是否启动，再重新连接。', 'retry', '重新连接', 'refresh'); }
 }
-window.addEventListener('hashchange', () => { if (state.ai.recording) stopRecording(true); state.route = ROUTES[location.hash.slice(1)] ? location.hash.slice(1) : 'dashboard'; refreshPage(); scheduleUpdatePoll(); });
+window.addEventListener('hashchange', () => { if (state.ai.recording) stopRecording(true); state.route = ROUTES[location.hash.slice(1)] ? location.hash.slice(1) : 'dashboard'; if ($('app-shell').hidden) return; window.scrollTo({top: 0, left: 0, behavior: 'instant'}); $('main-content').focus({preventScroll: true}); refreshPage(); scheduleUpdatePoll(); });
 document.addEventListener('click', async event => {
   const target = event.target.closest('[data-action]'); if (!target || target.disabled) return;
   const action = target.dataset.action; const id = Number(target.dataset.id);
+  if (action === 'focus-main') { ($('app-shell').hidden ? document.querySelector('#login-form input') : $('main-content')).focus(); return; }
+  if (action === 'browse-items' || action === 'stat-filter') {
+    const value = target.dataset.value || 'all';
+    if (value === 'locations') { navigate('locations'); return; }
+    if (value === 'attention') { state.expiry = state.dashboard?.expired_count ? 'expired' : 'soon'; navigate('expiry'); return; }
+    state.filters = {q: '', category: '', category_id: '', status: value === 'in_use' ? 'in_use' : '', location_id: '', archived: 'false'};
+    history.replaceState(null, '', `${location.pathname}${location.hash}`);
+    navigate('items'); return;
+  }
+  if (action === 'inventory-view') {
+    if (!['grid', 'list'].includes(target.dataset.value) || state.route !== 'items') return;
+    state.inventory.view = target.dataset.value; state.inventory.visible = 48; rememberInventoryView(); renderItems(state.items);
+    document.querySelector(`.view-switch [data-value="${state.inventory.view}"]`)?.focus({preventScroll: true}); return;
+  }
+  if (action === 'inventory-more') {
+    if (state.route !== 'items') return;
+    const previousVisible = state.inventory.visible;
+    state.inventory.visible += 48; renderItems(state.items);
+    document.querySelectorAll('.item-grid .item-card')[previousVisible]?.focus({preventScroll: true}); return;
+  }
   if (action === 'close-modal') { target.closest('dialog')?.close(); return; }
   if (action === 'update-settings' || action === 'ai-settings') { target.closest('dialog')?.close(); navigate('settings'); return; }
   if (action === 'ai-settings-retry') { await loadAISettings(); return; }
@@ -733,11 +806,11 @@ document.addEventListener('click', async event => {
   if (action === 'add-location') { openLocationForm(null, Number(target.dataset.parent) || null); return; }
   if (action === 'edit-location') { openLocationForm(id); return; }
   if (action === 'delete-location') { confirmDeleteLocation(id); return; }
-  if (action === 'select-location') { state.selectedLocation = id; renderLocations(); return; }
+  if (action === 'select-location') { state.selectedLocation = id; renderLocations(); document.querySelector(`.location-row[data-id="${id}"]`)?.focus({preventScroll: true}); return; }
   if (action === 'view-location-items') { state.filters = {q: '', category: '', category_id: '', status: '', location_id: String(id), archived: 'false'}; navigate('items'); return; }
   if (action === 'qr') { openQr(id); return; }
   if (action === 'print-qr') { window.print(); return; }
-  if (action === 'expiry-tab') { state.expiry = target.dataset.value; refreshPage(); return; }
+  if (action === 'expiry-tab') { state.expiry = target.dataset.value; await refreshPage(); if (state.route === 'expiry') $(`expiry-tab-${state.expiry}`)?.focus({preventScroll: true}); return; }
   if (action === 'clear-filters') { state.filters = {q: '', category: '', category_id: '', status: '', location_id: '', archived: 'false'}; history.replaceState(null, '', `${location.pathname}${location.hash}`); refreshPage(); return; }
   if (action === 'retry') { bootstrap(); return; }
   if (action === 'remove-photo') { const form = target.closest('form'); form.dataset.image = ''; form.querySelector('[name="photo"]').value = ''; $('image-preview').innerHTML = icon('image'); target.remove(); return; }
@@ -759,6 +832,10 @@ document.addEventListener('input', event => {
 window.addEventListener('pagehide', () => stopRecording(true));
 document.addEventListener('change', event => {
   const target = event.target;
+  if (target.id === 'item-sort') {
+    if (!['recent', 'name', 'quantity', 'expiry'].includes(target.value) || state.route !== 'items') return;
+    state.inventory.sort = target.value; state.inventory.visible = 48; rememberInventoryView(); renderItems(state.items); $('item-sort')?.focus({preventScroll: true}); return;
+  }
   if (target.closest('#ai-settings-form')) {
     state.aiSettings.message = '';
     if (target.name.startsWith('clear_') && target.checked) aiSettingsForm().elements[target.name.slice(6)].value = '';
@@ -799,6 +876,13 @@ document.addEventListener('submit', async event => {
     else if (form.id === 'delete-location-form') { await api(`/api/locations/${form.dataset.id}`, {method: 'DELETE'}); $('action-modal').close(); state.selectedLocation = null; toast('收纳位置已删除。'); await refreshAfterMutation(); }
   } catch (error) { if (errorElement) { errorElement.textContent = error.message; errorElement.hidden = false; } else toast(error.message, true); }
   finally { form.dataset.saving = 'false'; if (button) button.disabled = false; }
+});
+document.addEventListener('keydown', event => {
+  const tab = event.target.closest('[data-action="expiry-tab"]');
+  if (!tab || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const value = event.key === 'Home' ? 'soon' : event.key === 'End' ? 'expired' : tab.dataset.value === 'soon' ? 'expired' : 'soon';
+  $(`expiry-tab-${value}`)?.click();
 });
 document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('click', event => { if (event.target === dialog) { const bounds = dialog.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close(); } }));
 let refreshingReminders = false;

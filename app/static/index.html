@@ -12,6 +12,7 @@
   <script src="/static/app.js" defer></script>
 </head>
 <body>
+  <button class="skip-link" data-action="focus-main">跳到主要内容</button>
   <div class="toast-container" id="toasts" role="status" aria-live="polite"></div>
   <div class="login-shell" id="login-view" hidden>
     <form class="login-card login-form" id="login-form">
@@ -36,11 +37,11 @@
       <div class="sidebar-note"><span class="sidebar-note-icon" aria-hidden="true">✳</span><p>少一点寻找，<br>多一点生活。</p><span>把家里的每一件物品<br>安放在恰好的地方。</span></div>
       <div class="sidebar-footer"><span class="connection-dot" aria-hidden="true"></span><span>NAS 私有存储</span><button id="logout-button" class="icon-button" data-action="logout" aria-label="退出登录" title="退出登录" hidden></button></div>
     </aside>
-    <main class="content" id="main-content">
-      <header class="topbar"><div><p class="page-eyebrow" id="page-eyebrow">YOUR HOME, ORGANIZED</p><h1 class="page-title" id="page-title">家庭概览</h1><p class="page-subtitle" id="page-subtitle">好好收纳，也好好生活。</p></div><div class="topbar-actions"><button class="button secondary" data-action="export" id="export-button"></button><button class="button primary" data-action="add-item" id="add-item-button"></button></div></header>
+    <main class="content" id="main-content" tabindex="-1">
+      <header class="topbar"><div><p class="page-eyebrow" id="page-eyebrow">YOUR HOME, ORGANIZED</p><h1 class="page-title" id="page-title">家庭概览</h1><p class="page-subtitle" id="page-subtitle">好好收纳，也好好生活。</p></div><div class="topbar-actions"><button class="button secondary" data-action="export" id="export-button"></button><button class="button primary" data-action="add-item" id="add-item-button"></button><button class="icon-button header-logout" data-action="logout" id="mobile-logout-button" aria-label="退出登录" title="退出登录" hidden></button></div></header>
       <div id="page-error" class="error-banner" hidden role="alert"></div>
       <div id="update-notice" class="update-notice" hidden role="status" aria-live="polite"></div>
-      <section class="view" id="page-view" aria-live="polite"><div class="loading-state"><span class="spinner"></span><p>正在整理你的家庭档案…</p></div></section>
+      <section class="view" id="page-view" aria-live="polite" aria-busy="true"><div class="loading-state" role="status"><span class="spinner" aria-hidden="true"></span><p>正在整理你的家庭档案…</p></div></section>
       <footer class="content-footer"><span>让物品各归其位，让生活轻盈一点。</span><span>HomeStorage · 存于家中</span></footer>
     </main>
     <nav class="mobile-nav" id="mobile-nav" aria-label="主导航"></nav>
