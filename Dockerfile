@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-ARG HOMESTORAGE_VERSION=2.2.0
+ARG HOMESTORAGE_VERSION=2.3.0
 ARG HOMESTORAGE_REVISION=local
 LABEL org.opencontainers.image.title="HomeStorage" \
     org.opencontainers.image.source="https://github.com/Adventurer0/HomeStorage" \

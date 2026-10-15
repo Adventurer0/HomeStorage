@@ -55,6 +55,40 @@ state.aiSettings = {status: null, loading: false, busy: false, forbidden: false,
 // Retain the live form when navigating; keys exist only in password inputs.
 let aiSettingsPanel = null;
 
+// Motion is decorative: the stylesheet always contains the final, visible state.
+// Keep only live animations so replacing a view or changing system preferences
+// cannot leave hidden content or retain detached cards.
+const motionPreference = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+const activeMotion = new Map();
+function cancelMotion(container = null) {
+  for (const [animation, element] of activeMotion) {
+    if (!container || element === container || container.contains(element)) {
+      activeMotion.delete(animation);
+      animation.cancel();
+    }
+  }
+}
+function enterMotion(element, {delay = 0, modal = false, compact = false} = {}) {
+  if (!element?.animate || motionPreference?.matches || document.visibilityState === 'hidden') return;
+  cancelMotion(element);
+  try {
+    const animation = element.animate([
+      {opacity: 0, transform: modal ? 'translateY(14px) scale(.985)' : `translateY(${compact ? 6 : 12}px)`},
+      {opacity: 1, transform: modal ? 'translateY(0) scale(1)' : 'translateY(0)'},
+    ], {duration: compact ? 240 : modal ? 300 : 360, delay, easing: 'cubic-bezier(.22, 1, .36, 1)', fill: 'backwards'});
+    activeMotion.set(animation, element);
+    const release = () => activeMotion.delete(animation);
+    animation.finished.then(release, release);
+  } catch (_) { /* Older browsers keep the same fully usable, static interface. */ }
+}
+function enterCollection(elements, compact = false) {
+  [...elements].slice(0, compact ? 8 : 6).forEach((element, index) => enterMotion(element, {delay: index * (compact ? 18 : 24), compact}));
+}
+function motionPreferenceChanged() { if (motionPreference?.matches) cancelMotion(); }
+if (motionPreference?.addEventListener) motionPreference.addEventListener('change', motionPreferenceChanged);
+else motionPreference?.addListener?.(motionPreferenceChanged);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') cancelMotion(); });
+
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   if (options.body && !(options.body instanceof FormData)) headers.set('Content-Type', 'application/json');
@@ -127,7 +161,7 @@ function setNavigation() {
   renderUpdateNotice();
 }
 
-const illustration = `<svg class="storage-illustration" viewBox="0 0 400 240" fill="none" aria-hidden="true"><ellipse cx="217" cy="218" rx="154" ry="9" fill="#bacac0" opacity=".23"/><path d="M119 64h216v153H119z" fill="#edf0e5"/><path d="M113 62h228v8H113zM113 130h228v7H113zM113 208h228v9H113z" fill="#718b78"/><path d="M121 70h7v138h-7zm204 0h7v138h-7z" fill="#809981"/><rect x="142" y="89" width="71" height="40" rx="4" fill="#d8c3a0"/><path d="M138 87h79v8h-79z" fill="#e8d8b9"/><rect x="164" y="101" width="24" height="11" rx="2" fill="#fbf7ed"/><path d="M171 106h10" stroke="#b1a087" stroke-width="2"/><rect x="230" y="96" width="72" height="33" rx="4" fill="#adc2ad"/><path d="M226 94h80v7h-80z" fill="#c6d3bc"/><rect x="253" y="107" width="25" height="10" rx="2" fill="#f7f9ef"/><path d="M261 112h10" stroke="#849b80" stroke-width="2"/><rect x="143" y="157" width="73" height="50" rx="4" fill="#b2c0b7"/><path d="M138 154h83v8h-83z" fill="#c8d2c9"/><path d="M168 174h23v10h-23z" fill="#f3f4ea"/><rect x="233" y="163" width="67" height="44" rx="4" fill="#d8bc8e"/><path d="M229 159h76v8h-76z" fill="#e5d0a9"/><rect x="256" y="178" width="21" height="10" rx="2" fill="#fbf5e6"/><path d="M87 177c-15-21-22-42-7-53 1 19 14 25 11 48 8-25 9-44 28-44 4 18-11 29-21 48" fill="#7c9b77"/><path d="M91 179v20" stroke="#667f63" stroke-width="3"/><path d="M70 192h41l-6 25H76z" fill="#d7b992"/><path d="m278 53 10-10 10 10" stroke="#99b195" stroke-width="2"/><circle cx="77" cy="70" r="6" fill="#d2bb88"/><path d="m356 152 5-5 5 5-5 5-5-5Z" fill="#b3c1ab"/><path d="M188 43v-7m-3 3h6" stroke="#acbda8" stroke-width="2"/></svg>`;
+const illustration = `<svg class="storage-illustration" viewBox="0 0 400 240" fill="none" aria-hidden="true"><ellipse cx="217" cy="218" rx="154" ry="9" fill="#aeb9c9" opacity=".23"/><path d="M119 64h216v153H119z" fill="#e9edf3"/><path d="M113 62h228v8H113zM113 130h228v7H113zM113 208h228v9H113z" fill="#8190a5"/><path d="M121 70h7v138h-7zm204 0h7v138h-7z" fill="#96a3b6"/><rect x="142" y="89" width="71" height="40" rx="4" fill="#d8dce4"/><path d="M138 87h79v8h-79z" fill="#e8ebf0"/><rect x="164" y="101" width="24" height="11" rx="2" fill="#fbfcfe"/><path d="M171 106h10" stroke="#9ba7b9" stroke-width="2"/><rect x="230" y="96" width="72" height="33" rx="4" fill="#bdd5ee"/><path d="M226 94h80v7h-80z" fill="#d5e5f7"/><rect x="253" y="107" width="25" height="10" rx="2" fill="#f7fbff"/><path d="M261 112h10" stroke="#8caed3" stroke-width="2"/><rect x="143" y="157" width="73" height="50" rx="4" fill="#b9c8dd"/><path d="M138 154h83v8h-83z" fill="#d5deeb"/><path d="M168 174h23v10h-23z" fill="#f3f7fc"/><rect x="233" y="163" width="67" height="44" rx="4" fill="#c4d8ef"/><path d="M229 159h76v8h-76z" fill="#dceafa"/><rect x="256" y="178" width="21" height="10" rx="2" fill="#f8fbff"/><path d="M87 177c-15-21-22-42-7-53 1 19 14 25 11 48 8-25 9-44 28-44 4 18-11 29-21 48" fill="#849eb4"/><path d="M91 179v20" stroke="#718ca4" stroke-width="3"/><path d="M70 192h41l-6 25H76z" fill="#cbd3de"/><path d="m278 53 10-10 10 10" stroke="#9ab7d7" stroke-width="2"/><circle cx="77" cy="70" r="6" fill="#b2d2f4"/><path d="m356 152 5-5 5 5-5 5-5-5Z" fill="#b6cde8"/><path d="M188 43v-7m-3 3h6" stroke="#a5bdd9" stroke-width="2"/></svg>`;
 function logRow(log, compact = false) {
   const quantity = log.quantity_delta ? `<span class="log-quantity">${log.quantity_delta > 0 ? '+' : ''}${number(log.quantity_delta)}</span>` : '';
   const transition = log.from_location && log.to_location && log.from_location !== log.to_location ? `${log.from_location} → ${log.to_location}` : log.to_location || log.from_location || '';
@@ -154,6 +188,7 @@ function itemFilters() {
   return `<div class="toolbar"><form class="search-form" id="search-form"><div class="search-wrap">${icon('search')}<input class="search-input" id="item-search" name="query" type="search" placeholder="搜索名称、品牌、型号或标签…" maxlength="200" aria-label="搜索物品" value="${esc(f.q)}"><button class="button subtle button-small" type="submit">搜索</button></div></form><div class="filter-row"><select class="form-control" data-filter="location_id" aria-label="筛选位置">${option('', '全部位置', f.location_id)}${locationOptions(f.location_id, false)}</select><select class="form-control" data-filter="category_id" aria-label="筛选分类">${option('', '全部分类', f.category_id)}${state.categories.map(cat => option(cat.id, `${cat.name}${cat.active ? '' : '（已停用）'}`, f.category_id)).join('')}</select><select class="form-control" data-filter="status" aria-label="筛选状态">${option('', '全部状态', f.status)}${Object.entries(STATUS).map(([val, name]) => option(val, name, f.status)).join('')}</select><select class="form-control" data-filter="archived" aria-label="筛选归档">${option('false', '未归档', f.archived)}${option('true', '已归档', f.archived)}${option('all', '包含归档', f.archived)}</select>${hasFilters() ? `<button class="button subtle button-small" data-action="clear-filters">清除筛选</button>` : ''}</div></div>`;
 }
 function renderItems(items) {
+  cancelMotion($('page-view'));
   const filtering = hasFilters();
   const sorted = [...items].sort((a, b) => {
     if (state.inventory.sort === 'name') return String(a.name).localeCompare(String(b.name), 'zh-CN', {numeric: true}) || b.id - a.id;
@@ -490,6 +525,7 @@ async function installUpdate(form) {
 }
 async function refreshPage(showLoading = true) {
   const token = ++state.renderToken;
+  cancelMotion($('page-view'));
   $('page-error').hidden = true;
   $('page-view').setAttribute('aria-busy', 'true');
   setNavigation();
@@ -503,12 +539,27 @@ async function refreshPage(showLoading = true) {
     else if (state.route === 'history') { const logs = await api('/api/logs?limit=200'); if (token !== state.renderToken) return; renderHistory(logs); }
     else if (state.route === 'settings') { renderSettings(); await Promise.all([loadUpdateStatus(), loadAISettings(token)]); if (token !== state.renderToken) return; renderSettings(); }
   } catch (error) { if (token !== state.renderToken) return; showError(error); $('page-view').innerHTML = empty('暂时无法读取数据', '请检查 NAS 服务是否运行，稍后重新连接。', 'retry', '重新连接', 'refresh'); }
-  finally { if (token === state.renderToken) $('page-view').setAttribute('aria-busy', 'false'); }
+  finally {
+    if (token === state.renderToken) {
+      $('page-view').setAttribute('aria-busy', 'false');
+      if (showLoading && !$('app-shell').hidden && !$('page-view').contains(document.activeElement)) enterCollection($('page-view').children);
+    }
+  }
 }
 function navigate(route) { if (location.hash === `#${route}`) { state.route = route; refreshPage(); } else location.hash = route; }
 async function refreshAfterMutation() { [state.locations, state.categories, state.dashboard] = await Promise.all([api('/api/locations'), api('/api/categories'), api('/api/dashboard')]); await refreshPage(false); }
 function modalHeader(title, id, subtitle = '') { return `<div class="modal-header"><div><h2 class="modal-title" id="${id}" tabindex="-1">${esc(title)}</h2>${subtitle ? `<p class="panel-subtitle">${esc(subtitle)}</p>` : ''}</div><button type="button" class="icon-button modal-close" data-action="close-modal" aria-label="关闭">${icon('close')}</button></div>`; }
-function openModal(id, content) { const dialog = $(id); dialog.innerHTML = content; if (!dialog.open) dialog.showModal(); dialog.scrollTop = 0; dialog.querySelector('.modal-title')?.focus({preventScroll: true}); return dialog; }
+function openModal(id, content) {
+  const dialog = $(id);
+  const opening = !dialog.open;
+  cancelMotion(dialog);
+  dialog.innerHTML = content;
+  if (opening) dialog.showModal();
+  dialog.scrollTop = 0;
+  dialog.querySelector('.modal-title')?.focus({preventScroll: true});
+  if (opening) enterMotion(dialog, {modal: true});
+  return dialog;
+}
 function field(label, name, value = '', type = 'text', extra = '', wide = false) { return `<label class="form-field${wide ? ' span-2' : ''}"><span class="field-label">${esc(label)}</span><input class="form-control" name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`; }
 function selectField(label, name, values, value = '', extra = '') { return `<label class="form-field"><span class="field-label">${esc(label)}</span><select class="form-control" name="${name}" ${extra}>${values.map(([key, text]) => option(key, text, value)).join('')}</select></label>`; }
 
@@ -649,14 +700,17 @@ function aiPanel() {
   const microphone = window.isSecureContext && navigator.mediaDevices?.getUserMedia && window.MediaRecorder;
   const voiceAvailable = enabled && state.ai.status?.voice_enabled && microphone;
   const voiceHint = !window.isSecureContext ? '手机录音需要 HTTPS。当前地址可用手机键盘的语音输入，转成文字后发送。' : !microphone ? '当前浏览器不支持网页录音，请使用手机键盘的语音输入。' : !state.ai.status?.voice_enabled ? '配置语音识别模型后可使用录音；现在可以打字或用手机键盘语音输入。' : '录音后先核对识别文字，再点击发送。最多录音 2 分钟，文件不超过 10 MB。';
-  return `<section class="panel ai-panel" id="ai-panel" aria-labelledby="ai-panel-title"><div class="panel-header"><div><h2 class="panel-title" id="ai-panel-title">${icon('chat')} AI 收纳助手</h2><p class="panel-subtitle">问位置、记物品。每次写入，都由你确认。</p></div><button class="button subtle button-small" type="button" data-action="${enabled ? 'ai-help' : 'ai-settings'}">${enabled ? '接入与隐私' : '配置助手'}</button></div><div class="ai-panel-body">${!enabled ? '<div class="ai-config-notice"><strong>助手尚未启用</strong><span>打开“设置 → AI 与语音”，填写 API 和模型，保存后立即生效。</span></div>' : `<p class="ai-connection"><span class="connection-dot"></span> 已配置 · ${esc(state.ai.status.model || 'AI 模型')}</p>`}<div class="ai-messages" id="ai-messages" role="log" aria-label="与收纳助手的对话" aria-live="polite">${aiMessages()}</div>${waiting || recording ? `<p class="ai-progress" role="status">${recording ? `${icon('mic')} 正在录音，点击“停止并识别”结束…` : state.ai.transcribing ? '正在识别语音，完成后请核对文字…' : state.ai.recording === 'starting' ? '正在请求麦克风权限…' : '助手正在查询和整理…'}</p>` : ''}<form id="ai-form"><label class="screen-reader" for="ai-message">给 AI 收纳助手的消息</label><textarea class="form-control ai-input" id="ai-message" name="message" rows="2" maxlength="4000" placeholder="说说物品名称、数量和位置，或者问我东西在哪里…"${!enabled || waiting || recording ? ' disabled' : ''}>${esc(state.ai.input)}</textarea><div class="ai-compose-actions"><button class="button secondary" type="button" data-action="ai-record"${(!voiceAvailable || waiting) && !recording ? ' disabled' : ''}>${icon('mic')}${recording ? '停止并识别' : '语音输入'}</button><button class="button primary" type="submit"${!enabled || waiting || recording || !state.ai.input.trim() ? ' disabled' : ''}>${icon('arrow')} 发送</button></div></form><p class="help-text ai-voice-hint">${esc(voiceHint)}</p><p class="help-text ai-privacy-note">AI 接口会接收本次对话、录音及完成任务所需的档案信息；密钥留在 NAS 后端。助手只能读取档案和提交待确认操作，不能修改程序。</p></div></section>`;
+  return `<section class="panel ai-panel" id="ai-panel" aria-labelledby="ai-panel-title"><div class="panel-header"><div><h2 class="panel-title" id="ai-panel-title">${icon('chat')} AI 收纳助手</h2><p class="panel-subtitle">问位置、记物品。每次写入，都由你确认。</p></div><button class="button subtle button-small" type="button" data-action="${enabled ? 'ai-help' : 'ai-settings'}">${enabled ? '接入与隐私' : '配置助手'}</button></div><div class="ai-panel-body">${!enabled ? '<div class="ai-config-notice"><strong>助手尚未启用</strong><span>打开“设置 → AI 与语音”，填写 API 和模型，保存后立即生效。</span></div>' : `<p class="ai-connection"><span class="connection-dot"></span> 已配置 · ${esc(state.ai.status.model || 'AI 模型')}</p>`}<div class="ai-messages" id="ai-messages" role="log" aria-label="与收纳助手的对话" aria-live="polite">${aiMessages()}</div>${waiting || recording ? `<p class="ai-progress" role="status">${recording ? `${icon('mic')} 正在录音，点击“停止并识别”结束…` : state.ai.transcribing ? '正在识别语音，完成后请核对文字…' : state.ai.recording === 'starting' ? '正在请求麦克风权限…' : '助手正在查询和整理…'}</p>` : ''}<form id="ai-form"><label class="screen-reader" for="ai-message">给 AI 收纳助手的消息</label><textarea class="form-control ai-input" id="ai-message" name="message" rows="2" maxlength="4000" placeholder="说说物品名称、数量和位置，或者问我东西在哪里…"${!enabled || waiting || recording ? ' disabled' : ''}>${esc(state.ai.input)}</textarea><div class="ai-compose-actions"><button class="button secondary${recording ? ' is-recording' : ''}" type="button" data-action="ai-record" aria-pressed="${recording}"${(!voiceAvailable || waiting) && !recording ? ' disabled' : ''}>${icon('mic')}${recording ? '停止并识别' : '语音输入'}</button><button class="button primary" type="submit"${!enabled || waiting || recording || !state.ai.input.trim() ? ' disabled' : ''}>${icon('arrow')} 发送</button></div></form><p class="help-text ai-voice-hint">${esc(voiceHint)}</p><p class="help-text ai-privacy-note">AI 接口会接收本次对话、录音及完成任务所需的档案信息；密钥留在 NAS 后端。助手只能读取档案和提交待确认操作，不能修改程序。</p></div></section>`;
 }
 function renderAI(focus = false) {
   renderAISettings();
   if (state.route !== 'dashboard' || !$('ai-panel')) return;
   const previousScroll = $('ai-messages')?.scrollTop || 0;
+  const previousCount = $('ai-messages')?.querySelectorAll('.ai-message').length || 0;
+  cancelMotion($('ai-panel'));
   $('ai-panel').outerHTML = aiPanel();
   const messages = $('ai-messages'); if (messages) messages.scrollTop = focus ? messages.scrollHeight : previousScroll;
+  if (messages) enterCollection([...messages.querySelectorAll('.ai-message')].slice(previousCount), true);
   if (focus && !state.ai.busy && !state.ai.recording && !state.ai.transcribing) $('ai-message')?.focus({preventScroll: true});
 }
 function openAIHelp() {
@@ -780,6 +834,7 @@ document.addEventListener('click', async event => {
     if (state.route !== 'items') return;
     const previousVisible = state.inventory.visible;
     state.inventory.visible += 48; renderItems(state.items);
+    enterCollection([...document.querySelectorAll('.item-grid .item-card')].slice(previousVisible), true);
     document.querySelectorAll('.item-grid .item-card')[previousVisible]?.focus({preventScroll: true}); return;
   }
   if (action === 'close-modal') { target.closest('dialog')?.close(); return; }
@@ -884,7 +939,10 @@ document.addEventListener('keydown', event => {
   const value = event.key === 'Home' ? 'soon' : event.key === 'End' ? 'expired' : tab.dataset.value === 'soon' ? 'expired' : 'soon';
   $(`expiry-tab-${value}`)?.click();
 });
-document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('click', event => { if (event.target === dialog) { const bounds = dialog.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close(); } }));
+document.querySelectorAll('dialog').forEach(dialog => {
+  dialog.addEventListener('close', () => cancelMotion(dialog));
+  dialog.addEventListener('click', event => { if (event.target === dialog) { const bounds = dialog.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close(); } });
+});
 let refreshingReminders = false;
 async function refreshReminders() {
   if (refreshingReminders || document.visibilityState !== 'visible' || $('app-shell').hidden ||
