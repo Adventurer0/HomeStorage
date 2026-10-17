@@ -12,10 +12,13 @@ import threading
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator
 
 from .releases import ReleaseClient, ReleaseError, REVISION_RE, valid_version
 from .state import StateStore, ensure_token
+from .proxy import PROXY_FIELDS, ProxySettingsInput, merge_proxy_configuration, proxy_configuration, public_proxy_status
 
 
 logger = logging.getLogger("homestorage.updater")
@@ -27,8 +30,8 @@ class EmptyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
-class SettingsRequest(EmptyRequest):
-    auto_update: StrictBool
+class SettingsRequest(ProxySettingsInput):
+    pass
 
 
 class InstallRequest(EmptyRequest):
@@ -56,6 +59,7 @@ def safe_status(engine, store):
         raise RuntimeError("更新状态无效")
     result = {key: snapshot.get(key) for key in STATUS_FIELDS}
     state = store.get()
+    result.update(public_proxy_status(state))
     result["auto_update"] = state["auto_update"]
     result["next_check_at"] = state.get("next_check_at")
     result["available"] = snapshot.get("available") is True
@@ -93,6 +97,7 @@ class JobController:
         self._lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="homestorage-update")
         self._future = None
+        self._owned_release_client = None
 
     def start(self, operation, *, version=None, automatic=False):
         if not self._lock.acquire(blocking=False):
@@ -127,8 +132,50 @@ class JobController:
         finally:
             self._lock.release()
 
+    def set_settings(self, updates):
+        if not PROXY_FIELDS.intersection(updates):
+            self.store.update(auto_update=updates["auto_update"])
+            return
+        if not self._lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="更新任务正在执行，请等待完成后修改代理")
+        prepared = None
+        try:
+            configuration = merge_proxy_configuration(self.store.get(), updates)
+            previous = self.engine.releases
+            try:
+                prepared = ReleaseClient(proxy_configuration=configuration, github_token=getattr(previous, "github_token", None))
+            except Exception:
+                raise HTTPException(status_code=400, detail="代理设置无效，或当前更新服务不支持该代理类型") from None
+            fields = {"proxy_configuration": configuration}
+            if "auto_update" in updates:
+                fields["auto_update"] = updates["auto_update"]
+            try:
+                self.store.update(**fields)
+            except Exception:
+                raise HTTPException(status_code=503, detail="代理设置未能保存，原设置仍然有效") from None
+            # No update job can enter until the durable state and active client
+            # have both been switched. Failed preparation/persistence leaves the
+            # previous client and stored settings intact.
+            self.engine.releases = prepared
+            self._owned_release_client = prepared
+            prepared = None
+            try:
+                if hasattr(previous, "close"):
+                    previous.close()
+            except Exception:
+                logger.warning("Previous release connection could not be closed")
+        finally:
+            if prepared is not None:
+                try:
+                    prepared.close()
+                except Exception:
+                    logger.warning("Prepared release connection could not be closed")
+            self._lock.release()
+
     def close(self):
         self._executor.shutdown(wait=True, cancel_futures=False)
+        if self._owned_release_client is not None:
+            self._owned_release_client.close()
 
 
 async def scheduler(controller, store, timezone):
@@ -167,7 +214,7 @@ def create_app(*, engine=None, store=None, state_dir=None, data_dir=None, token=
             from .docker import DockerClient
             from .engine import UpdateEngine
             docker = DockerClient("/var/run/docker.sock")
-            release_client = ReleaseClient()
+            release_client = ReleaseClient(proxy_configuration=proxy_configuration(store.get()))
             engine = UpdateEngine(docker, store, release_client, self_id=os.environ.get("HOSTNAME", ""), data_dir=configured_data_dir, state_dir=configured_state_dir)
         application.state.token = credential
         application.state.engine = engine
@@ -190,12 +237,18 @@ def create_app(*, engine=None, store=None, state_dir=None, data_dir=None, token=
                 except asyncio.CancelledError:
                     pass
             await asyncio.to_thread(controller.close)
-            if release_client:
+            if release_client is not None and release_client is getattr(engine, "releases", None):
                 release_client.close()
             if docker and hasattr(docker, "close"):
                 docker.close()
 
     application = FastAPI(title="HomeStorage internal updater", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+
+    @application.exception_handler(RequestValidationError)
+    async def invalid_request(_request, _error):
+        # Pydantic's default response includes the submitted value, which may be
+        # a proxy password. Neither API may echo credentials on validation errors.
+        return JSONResponse({"detail": "参数格式或取值不正确，请检查填写内容"}, status_code=422)
 
     async def authenticate(authorization: str | None = Header(default=None)):
         if not authorization or len(authorization) > 256 or not authorization.isascii() or not authorization.startswith("Bearer ") or not hmac.compare_digest(authorization[7:], application.state.token):
@@ -218,7 +271,7 @@ def create_app(*, engine=None, store=None, state_dir=None, data_dir=None, token=
 
     @application.post("/v1/settings", dependencies=[Depends(authenticate)])
     async def settings_endpoint(payload: SettingsRequest):
-        application.state.store.update(auto_update=payload.auto_update)
+        await asyncio.to_thread(application.state.controller.set_settings, payload.model_dump(exclude_unset=True))
         return await current_status()
 
     @application.post("/v1/install", status_code=202, dependencies=[Depends(authenticate)])

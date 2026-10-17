@@ -562,6 +562,19 @@ class UpdateEngineTest(unittest.TestCase):
     def files(self):
         return {str(path.relative_to(self.data_dir)): path.read_bytes() for path in self.data_dir.rglob("*") if path.is_file()}
 
+    def test_failed_new_check_does_not_show_previous_completed_download_progress(self):
+        from updater.engine import UpdateError
+        from updater.releases import ReleaseError
+
+        self.store.update(phase="failed", progress={"downloaded_bytes": 56639573, "total_bytes": 56639573})
+        with patch.object(self.releases, "latest", side_effect=ReleaseError("读取更新清单失败")):
+            with self.assertRaises(UpdateError):
+                self.engine.check()
+        status = self.engine.status()
+        self.assertEqual(status["phase"], "failed")
+        self.assertEqual(status["progress"], {"downloaded_bytes": 0, "total_bytes": 0})
+        self.assertEqual(self.docker.events, [])
+
     def test_success_backs_up_all_data_before_creation_and_preserves_deployment_config(self):
         original = deepcopy(self.docker.container_map["old"])
         original_files = self.files()

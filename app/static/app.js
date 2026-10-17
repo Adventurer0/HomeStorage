@@ -54,6 +54,10 @@ function rememberInventoryView() {
 state.aiSettings = {status: null, loading: false, busy: false, forbidden: false, generation: 0, sequence: 0, error: '', message: ''};
 // Retain the live form when navigating; keys exist only in password inputs.
 let aiSettingsPanel = null;
+state.updateProxy = {busy: false, generation: 0, error: '', message: ''};
+// Polling only updates labels on this panel. Unsaved credentials stay in its
+// password input and are discarded when leaving settings or logging out.
+let updateProxyPanel = null;
 
 // Motion is decorative: the stylesheet always contains the final, visible state.
 // Keep only live animations so replacing a view or changing system preferences
@@ -425,9 +429,101 @@ function clearAISettings() {
   }
 }
 
+function updateProxyForm() { return updateProxyPanel?.querySelector('#update-proxy-form'); }
+function updateProxySupported() { return ['environment', 'web'].includes(state.updates.status?.proxy_source); }
+function updateProxyIdentityChanged() {
+  const form = updateProxyForm(), status = state.updates.status;
+  return Boolean(form && status && (form.elements.proxy_url.value.trim() !== String(status.proxy_url || '') || form.elements.proxy_username.value !== String(status.proxy_username || '')));
+}
+function updateProxyDirty() {
+  const form = updateProxyForm();
+  return Boolean(form && updateProxySupported() && (updateProxyIdentityChanged() || form.elements.proxy_password.value || form.elements.clear_proxy_password.checked));
+}
+function setUpdateProxyValues() {
+  const form = updateProxyForm(), status = state.updates.status;
+  if (!form || !status || !updateProxySupported()) return;
+  for (const name of ['proxy_url', 'proxy_username']) {
+    const value = typeof status[name] === 'string' ? status[name] : '';
+    if (form.elements[name].value !== value) form.elements[name].value = value;
+  }
+}
+function renderUpdateProxy() {
+  if (state.route !== 'settings' || $('app-shell').hidden || !$('update-proxy-mount')) return;
+  if (!updateProxyPanel) {
+    updateProxyPanel = document.createElement('section');
+    updateProxyPanel.className = 'panel update-proxy-panel';
+    updateProxyPanel.setAttribute('aria-labelledby', 'update-proxy-title');
+    updateProxyPanel.innerHTML = `<div class="panel-header"><div><h2 class="panel-title" id="update-proxy-title">${icon('shield')} 更新下载代理</h2><p class="panel-subtitle">让检查新版和下载更新使用你指定的代理。</p></div><span class="status-chip" id="update-proxy-connection">正在读取…</span></div><div class="panel-body"><div class="update-unavailable" id="update-proxy-unavailable" hidden role="status"><strong>需要升级更新服务</strong><p>当前更新服务还不支持在网页保存代理。请先按部署说明升级 updater 服务一次，保留现有数据，再回来配置。</p></div><p class="error-banner" id="update-proxy-error" hidden role="alert"></p><form id="update-proxy-form" autocomplete="off"><fieldset id="update-proxy-fields"><label class="form-field"><span class="field-label">代理地址</span><input class="form-control" name="proxy_url" type="url" inputmode="url" spellcheck="false" maxlength="2048" placeholder="http://192.168.1.20:7890"><span class="help-text">填写代理设备的局域网 IP 和端口，支持 HTTP、HTTPS、SOCKS5。VPN 订阅链接不能填在这里；留空并保存可关闭更新代理。</span></label><div class="update-proxy-credentials"><label class="form-field"><span class="field-label">代理用户名 <span class="field-optional">可选</span></span><input class="form-control" name="proxy_username" type="text" autocomplete="off" spellcheck="false" maxlength="255" placeholder="代理未要求认证时留空"></label><label class="form-field"><span class="field-label">代理密码 <span class="field-optional">可选</span></span><input class="form-control" name="proxy_password" type="password" autocomplete="new-password" spellcheck="false" maxlength="2048" placeholder="代理未要求认证时留空"><span class="help-text" id="update-proxy-password-status"></span></label></div><label class="ai-key-clear"><input type="checkbox" name="clear_proxy_password"><span>保存时移除已有代理密码</span></label><div class="update-proxy-help"><p>使用 Clash / Mihomo 时，请开启「允许局域网连接」，并保持代理设备开机。地址中不要填写用户名或密码，在上方分别填写。</p><p>此配置仅用于程序更新，保存后对下一次检查和下载生效。代理密码保存在 NAS，保存后不会回显。</p></div><div class="ai-settings-footer update-proxy-footer"><span id="update-proxy-save-status" role="status"></span><button class="button primary" type="submit">${icon('check')} 保存更新代理</button></div></fieldset></form></div>`;
+    setUpdateProxyValues();
+  }
+  const mount = $('update-proxy-mount');
+  if (updateProxyPanel.parentElement !== mount) mount.replaceChildren(updateProxyPanel);
+  const form = updateProxyForm(), status = state.updates.status, settings = state.updateProxy;
+  const find = selector => updateProxyPanel.querySelector(selector);
+  const supported = updateProxySupported(), available = Boolean(status?.available);
+  const busy = settings.busy || state.updates.busy || updateBusy();
+  const identityChanged = updateProxyIdentityChanged();
+  find('#update-proxy-connection').textContent = !status ? '正在读取…' : !available ? '更新服务未连接' : !supported ? '尚未支持' : status.proxy_url ? '已配置更新代理' : status.proxy_source === 'environment' ? '未设置网页代理' : '直接连接 GitHub';
+  find('#update-proxy-unavailable').hidden = !status || !available || supported;
+  find('#update-proxy-error').hidden = !settings.error;
+  find('#update-proxy-error').textContent = settings.error;
+  form.hidden = Boolean(status && !supported);
+  find('#update-proxy-fields').disabled = !supported || !available || busy || state.updates.offline;
+  form.elements.proxy_password.placeholder = status?.proxy_password_set ? '已有密码 · 留空保留' : '代理未要求认证时留空';
+  form.elements.clear_proxy_password.disabled = !status?.proxy_password_set || busy || !available || state.updates.offline;
+  find('#update-proxy-password-status').textContent = !form.elements.proxy_url.value.trim() ? '地址留空保存后，会关闭代理并清除用户名与密码。' : status?.proxy_password_set && identityChanged ? '地址或用户名已更改：请重新填写密码，否则会清除原密码。' : status?.proxy_password_set ? '地址和用户名不变时，密码留空会保留原密码。' : '没有保存代理密码；不需要认证时保持留空。';
+  find('#update-proxy-save-status').textContent = settings.busy ? '正在保存…' : updateBusy() ? '正在检查或安装更新，完成后可修改代理。' : settings.message || (!status ? '正在读取更新配置…' : !available ? '请先连接更新服务。' : updateProxyDirty() ? '有未保存的修改。' : status.proxy_source === 'environment' ? '当前使用 NAS 部署时的配置，可在这里修改。' : '已使用网页保存的配置。');
+  const save = form.querySelector('[type="submit"]');
+  save.disabled = !supported || !available || busy || state.updates.offline || (!updateProxyDirty() && status.proxy_source !== 'environment');
+  save.innerHTML = settings.busy ? '<span class="spinner" aria-hidden="true"></span> 正在保存…' : `${icon('check')} 保存更新代理`;
+}
+async function saveUpdateProxy(form) {
+  const settings = state.updateProxy, updates = state.updates;
+  if (settings.busy || updates.busy || updateBusy() || !updates.status?.available || updates.offline || !updateProxySupported() || (!updateProxyDirty() && updates.status.proxy_source !== 'environment')) return;
+  const body = {proxy_url: form.elements.proxy_url.value.trim(), proxy_username: form.elements.proxy_username.value};
+  if (body.proxy_url) {
+    try {
+      const url = new URL(body.proxy_url);
+      if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(url.protocol) || url.username || url.password || !url.hostname || !['', '/'].includes(url.pathname) || url.search || url.hash || /[\s\\]/.test(body.proxy_url)) throw new Error();
+    } catch (_) { settings.error = '请填写有效的代理地址，例如 http://192.168.1.20:7890；用户名和密码请分别填写。'; renderUpdateProxy(); form.elements.proxy_url.focus(); return; }
+  }
+  if (form.elements.clear_proxy_password.checked) body.proxy_password = null;
+  else if (form.elements.proxy_password.value) body.proxy_password = form.elements.proxy_password.value;
+  const generation = settings.generation, updateGeneration = updates.generation;
+  ++updates.sequence;
+  settings.busy = true; settings.error = ''; settings.message = ''; updates.busy = true; renderSettings();
+  try {
+    const status = await updateRequest('/api/settings/updates', {method: 'PATCH', body: JSON.stringify(body)});
+    if (updateGeneration !== updates.generation) return;
+    acceptUpdateStatus(status);
+    if (generation !== settings.generation) return;
+    form.elements.proxy_password.value = ''; form.elements.clear_proxy_password.checked = false;
+    setUpdateProxyValues();
+    settings.message = status.proxy_url ? '已保存，下一次检查和下载将使用更新代理。' : '已保存，更新代理已关闭。';
+    if (state.route === 'settings') toast(settings.message);
+  } catch (error) {
+    if (updateGeneration !== updates.generation) return;
+    if (error.status === 401) { handleUpdateError(error); return; }
+    if (generation === settings.generation) settings.error = String(error.message || '保存失败，请稍后重试。').slice(0, 500);
+  } finally {
+    delete body.proxy_password;
+    if (generation === settings.generation) settings.busy = false;
+    if (updateGeneration === updates.generation) { updates.busy = false; renderSettings(); scheduleUpdatePoll(); }
+  }
+}
+function clearUpdateProxy() {
+  const settings = state.updateProxy;
+  settings.generation++; settings.busy = false; settings.error = ''; settings.message = '';
+  if (updateProxyPanel) {
+    const form = updateProxyForm();
+    form.reset();
+    updateProxyPanel.remove(); updateProxyPanel = null;
+  }
+}
+
 function renderSettings() {
   if (state.route !== 'settings' || $('app-shell').hidden) return;
-  if (!$('settings-update-panels')) $('page-view').innerHTML = '<div class="settings-layout"><div id="ai-settings-mount"></div><div id="settings-update-panels"></div></div>';
+  if (!$('settings-update-panels')) $('page-view').innerHTML = '<div class="settings-layout"><div id="ai-settings-mount"></div><div id="settings-update-panels"></div><div id="update-proxy-mount"></div></div>';
   renderAISettings();
   const updates = state.updates;
   const status = updates.status;
@@ -442,6 +538,7 @@ function renderSettings() {
   const progress = phase === 'downloading' ? `<div class="update-download"><progress aria-label="新版下载进度"${Number.isFinite(total) && total > 0 && Number.isFinite(downloaded) && downloaded >= 0 ? ` max="${total}" value="${Math.min(downloaded, total)}"` : ''}></progress><span>${Number.isFinite(downloaded) && downloaded > 0 ? `${(downloaded / 1048576).toFixed(1)} MB${Number.isFinite(total) && total > 0 ? ` / ${(total / 1048576).toFixed(1)} MB` : ''}` : '正在连接下载服务…'}</span></div>` : '';
   const phaseCard = status && (phase !== 'idle' || updates.offline || updates.error) ? `<div class="update-state update-state-${['failed', 'rolled_back'].includes(phase) ? 'warning' : 'normal'}" role="status"><strong>${updates.offline && updateRunning() ? '正在等待服务恢复' : esc(UPDATE_PHASES[phase] || '更新状态')}</strong><p>${esc(updatePhaseText())}</p>${progress}${updateRunning() ? '<p class="help-text">备份和安装期间会短暂停用物品录入。请保持 NAS 开机，连接中断后本页会自动重试。</p>' : ''}${updates.needsReload ? '<button class="button primary button-small" data-action="update-reload">刷新使用新版</button>' : ''}</div>` : '';
   $('settings-update-panels').innerHTML = `<div class="settings-grid"><section class="panel update-version-panel"><div class="panel-header"><div><h2 class="panel-title">${icon('refresh')} 程序更新</h2><p class="panel-subtitle">查看新版，选择适合自己的更新时间。</p></div><span class="status-chip">当前 ${esc(status?.current_version || state.appVersion || '版本未知')}</span></div><div class="panel-body"><div class="update-version-summary"><div><span>最新稳定版本</span><strong>${esc(status?.latest_version || '尚未检查')}</strong></div><div><span>上次检查</span><strong>${date(status?.last_checked_at, true)}</strong></div></div>${!available ? `<div class="update-unavailable" role="status"><strong>更新服务尚未就绪</strong><p>${esc(status?.message || updates.error || '正在读取更新配置…')}</p><p class="help-text">首次启用需要按新版部署说明安装一次更新服务，保留原数据、密码和 AI 配置。如果已经配置，请稍后重新检测服务。</p></div>` : ''}${updates.error && available ? `<p class="error-banner update-error" role="alert">${esc(updates.error)}</p>` : ''}${phaseCard}${status?.update_available ? `<p class="update-available">${icon('check')} 发现新版 ${esc(status.latest_version)}</p>` : available && status?.last_checked_at && status?.latest_version && ['idle', 'completed'].includes(phase) && !busy && !updates.offline ? '<p class="update-current">已检查，目前没有可安装的新版。</p>' : ''}<div class="update-buttons"><button class="button secondary" data-action="update-check"${!available || busy || updates.offline ? ' disabled' : ''}>${icon('refresh')}${phase === 'checking' ? '正在检查…' : '检查更新'}</button><button class="button primary" data-action="update-install"${!available || busy || updates.offline || !status?.update_available || !status?.latest_version ? ' disabled' : ''}>${icon('download')} 更新到新版</button>${!available || updates.error || updates.offline ? `<button class="button subtle" data-action="update-reconnect">${available ? '重新连接' : '重新检测更新服务'}</button>` : ''}${updates.reauthenticate ? '<button class="button secondary" data-action="update-login">重新登录</button>' : ''}</div>${status?.release_notes ? `<div class="update-release-notes"><h3>新版说明${releaseUrl ? `<a class="text-link" href="${esc(releaseUrl)}" target="_blank" rel="noopener noreferrer">查看发布页面 ${icon('arrow')}</a>` : ''}</h3><div>${esc(status.release_notes)}</div></div>` : ''}</div></section><section class="panel update-preference-panel"><div class="panel-header"><div><h2 class="panel-title">${icon('settings')} 自动更新</h2><p class="panel-subtitle">默认关闭，只有保存后才会生效。</p></div></div><div class="panel-body"><form id="update-preference-form"><label class="update-toggle" for="auto-update"><span><strong>允许自动安装稳定新版</strong><span>开启后每天凌晨 03:00（${esc(timezoneLabel())}）检查，有新版时先备份数据再更新。</span></span><span class="switch-control"><input type="checkbox" id="auto-update" name="auto_update" role="switch"${auto ? ' checked' : ''}${!available || updates.busy || updates.offline ? ' disabled' : ''}><span class="switch-track" aria-hidden="true"></span></span></label><p class="help-text">关闭后只会检查新版，安装由你点击确认。已经开始的一次更新会继续完成，避免中途损坏数据。</p><div class="update-preference-footer"><span id="update-save-status" role="status">${esc(updates.savedMessage || (dirty ? '已更改，等待保存。' : status?.auto_update ? '当前已开启自动更新。' : '当前已关闭自动更新。'))}</span><button class="button primary button-small" type="submit"${!available || updates.busy || updates.offline || !dirty ? ' disabled' : ''}>保存选择</button></div></form><div class="update-backup-info"><h3>${icon('shield')} 更新前自动备份</h3><p>物品资料、照片和历史记录会一起备份，保留最近 3 次成功备份。新版运行失败时，更新服务会尝试恢复原版本和数据。</p><dl><div><dt>上次备份</dt><dd>${date(status?.last_backup_at, true)}</dd></div><div><dt>已保留备份</dt><dd>${number(status?.backup_count)} 份</dd></div><div><dt>下次检查</dt><dd>${date(status?.next_check_at, true)}</dd></div></dl><p class="help-text">系统备份也需要保留。程序更新独立于 AI 助手，AI 无法开启或执行更新。</p></div></div></section></div>`;
+  renderUpdateProxy();
   renderUpdateNotice();
 }
 function acceptUpdateStatus(status) {
@@ -451,8 +548,10 @@ function acceptUpdateStatus(status) {
     updates.inFlight = true; updates.offline = true; updates.error = status.message || '正在等待更新服务恢复。';
     renderUpdateNotice(); return;
   }
+  const proxyDraftChanged = updateProxyDirty() || Boolean(updateProxyForm()?.contains(document.activeElement));
   const draftChanged = updates.status && updates.preference !== null && updates.preference !== Boolean(updates.status.auto_update);
   updates.status = status;
+  if (!proxyDraftChanged) setUpdateProxyValues();
   if (!draftChanged) updates.preference = Boolean(status.auto_update);
   updates.offline = false; updates.disconnectedSince = null; updates.reauthenticate = false; updates.error = '';
   updates.inFlight = UPDATE_RUNNING.has(status.phase);
@@ -555,6 +654,7 @@ async function installUpdate(form) {
   } finally { if (generation === updates.generation) { updates.busy = false; button.disabled = false; renderSettings(); scheduleUpdatePoll(); } }
 }
 async function refreshPage(showLoading = true) {
+  if (state.route !== 'settings' && updateProxyPanel) clearUpdateProxy();
   const token = ++state.renderToken;
   cancelMotion($('page-view'));
   $('page-error').hidden = true;
@@ -829,7 +929,7 @@ async function toggleRecording() {
   } catch (error) { stream?.getTracks().forEach(track => track.stop()); state.ai.recording = false; toast(error.name === 'NotAllowedError' ? '麦克风权限未开启。请允许录音，或使用手机键盘语音输入。' : '无法开始录音，请检查麦克风或使用手机键盘语音输入。', true); renderAI(); }
 }
 
-function showLogin() { clearAISettings(); clearTimeout(updatePollTimer); updatePollTimer = null; state.updates.generation++; state.updates.status = null; state.updates.preference = null; state.updates.polling = false; state.updates.busy = false; state.updates.inFlight = false; state.updates.offline = false; state.updates.error = ''; state.updates.savedMessage = ''; state.updates.needsReload = false; state.updates.reauthenticate = false; state.updates.disconnectedSince = null; $('update-notice').hidden = true; stopRecording(true); state.ai.generation++; state.ai.busy = false; state.ai.transcribing = false; state.ai.messages = []; state.ai.input = ''; document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close()); $('app-shell').hidden = true; $('login-view').hidden = false; document.querySelector('#login-form input').focus(); }
+function showLogin() { clearAISettings(); clearUpdateProxy(); clearTimeout(updatePollTimer); updatePollTimer = null; state.updates.generation++; state.updates.status = null; state.updates.preference = null; state.updates.polling = false; state.updates.busy = false; state.updates.inFlight = false; state.updates.offline = false; state.updates.error = ''; state.updates.savedMessage = ''; state.updates.needsReload = false; state.updates.reauthenticate = false; state.updates.disconnectedSince = null; $('update-notice').hidden = true; stopRecording(true); state.ai.generation++; state.ai.busy = false; state.ai.transcribing = false; state.ai.messages = []; state.ai.input = ''; document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close()); $('app-shell').hidden = true; $('login-view').hidden = false; document.querySelector('#login-form input').focus(); }
 async function bootstrap() {
   try {
     const auth = await api('/api/auth'); state.authRequired = auth.auth_required;
@@ -910,6 +1010,11 @@ document.addEventListener('click', async event => {
 });
 document.addEventListener('input', event => {
   if (event.target.closest('#item-form') && ['name', 'tags'].includes(event.target.name)) refreshItemIcon(event.target.form);
+  if (event.target.closest('#update-proxy-form')) {
+    state.updateProxy.error = ''; state.updateProxy.message = '';
+    if (event.target.name === 'proxy_password' && event.target.value) updateProxyForm().elements.clear_proxy_password.checked = false;
+    renderUpdateProxy(); return;
+  }
   if (event.target.closest('#ai-settings-form')) {
     state.aiSettings.message = '';
     if (['api_key', 'transcription_api_key'].includes(event.target.name) && event.target.value) aiSettingsForm().elements[`clear_${event.target.name}`].checked = false;
@@ -920,6 +1025,11 @@ document.addEventListener('input', event => {
 window.addEventListener('pagehide', () => stopRecording(true));
 document.addEventListener('change', event => {
   const target = event.target;
+  if (target.closest('#update-proxy-form')) {
+    state.updateProxy.error = ''; state.updateProxy.message = '';
+    if (target.name === 'clear_proxy_password' && target.checked) updateProxyForm().elements.proxy_password.value = '';
+    renderUpdateProxy(); return;
+  }
   if (target.id === 'item-sort') {
     if (!['recent', 'name', 'quantity', 'expiry'].includes(target.value) || state.route !== 'items') return;
     state.inventory.sort = target.value; state.inventory.visible = 48; rememberInventoryView(); renderItems(state.items); $('item-sort')?.focus({preventScroll: true}); return;
@@ -953,6 +1063,7 @@ document.addEventListener('submit', async event => {
   if (form.id === 'ai-form') { await submitAI(form); return; }
   if (form.id === 'ai-settings-form') { await saveAISettings(form); return; }
   if (form.id === 'update-preference-form') { await saveUpdatePreference(); return; }
+  if (form.id === 'update-proxy-form') { await saveUpdateProxy(form); return; }
   if (form.id === 'update-install-form') { await installUpdate(form); return; }
   if (form.id === 'search-form') {
     const query = String(new FormData(form).get('query') || '').trim(); state.filters.q = query;

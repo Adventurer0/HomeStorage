@@ -505,6 +505,22 @@ select.form-control { padding-right: 25px; }
 .ai-settings-footer .spinner { width: 14px; height: 14px; }
 .ai-settings-retry { margin-top: 12px; }
 .ai-settings-unavailable[hidden], .ai-settings-retry[hidden], #ai-settings-form[hidden], #ai-settings-error[hidden] { display: none; }
+.update-proxy-panel { min-width: 0; }
+.update-proxy-panel .panel-header { align-items: flex-start; flex-wrap: wrap; gap: 12px; }
+.update-proxy-panel .panel-title { display: flex; align-items: center; gap: 8px; }
+.update-proxy-panel .panel-title > svg { width: 17px; height: 17px; color: var(--muted); }
+.update-proxy-panel .panel-body { padding-top: 2px; }
+#update-proxy-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.update-proxy-panel .form-field { display: grid; gap: 7px; margin-bottom: 16px; min-width: 0; }
+.update-proxy-panel .form-field > .field-label { margin-bottom: 0; }
+.update-proxy-panel .help-text { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.update-proxy-panel input { min-width: 0; }
+.field-optional { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 4px; }
+.update-proxy-credentials { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 20px; }
+.update-proxy-help { padding: 12px 16px; margin-top: 12px; background: #f5f6f9; border: 1px solid var(--line); border-radius: 12px; }
+.update-proxy-help > p { margin: 0; font-size: 12px; line-height: 1.9; color: var(--text); overflow-wrap: anywhere; }
+.update-proxy-help > p + p { margin-top: 8px; }
+#update-proxy-unavailable[hidden], #update-proxy-form[hidden], #update-proxy-error[hidden] { display: none; }
 .topbar > div:first-child { min-width: 0; }
 .header-logout { display: none; }
 .form-control:disabled { background: #f2f2f5; color: var(--muted); cursor: not-allowed; }
@@ -788,6 +804,9 @@ select.form-control { padding-right: 25px; }
   .ai-settings-footer { flex-wrap: wrap; gap: 12px; }
   .ai-settings-footer .button { width: 100%; }
   .ai-settings-privacy { padding: 12px; }
+  .update-proxy-panel .panel-header, .update-proxy-panel .panel-body { padding-left: 16px; padding-right: 16px; }
+  .update-proxy-credentials { grid-template-columns: minmax(0,1fr); gap: 0; }
+  .update-proxy-help { padding: 12px; }
   .ai-help + .modal-footer { flex-wrap: wrap; }
   .ai-help + .modal-footer .button { flex: 1; padding-left: 10px; padding-right: 10px; }
   .metric-value { font-size: 27px; }

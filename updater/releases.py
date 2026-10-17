@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import re
+import ssl
+import time
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -20,12 +22,67 @@ REVISION_RE = re.compile(r"[0-9a-f]{40}\Z")
 MAX_API = 1024 * 1024
 MAX_MANIFEST = 256 * 1024
 MAX_ARCHIVE = 1024 * 1024 * 1024
+MAX_ATTEMPTS = 3
 ASSET_HOSTS = {"github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com", "releases.githubusercontent.com"}
 ASSET_API_RE = re.compile(r"https://api\.github\.com/repos/Adventurer0/HomeStorage/releases/assets/[1-9][0-9]{0,19}\Z")
 
 
 class ReleaseError(ValueError):
     """Safe, user-readable failure, without URLs, credentials, or remote bodies."""
+
+
+class _NetworkError(ReleaseError):
+    """A classified transport failure; only the fixed reason and host are public."""
+
+    def __init__(self, host, reason, *, retryable):
+        self.host = host
+        self.reason = reason
+        self.retryable = retryable
+        super().__init__(f"{host} {reason}")
+
+
+def _network_error(error, url):
+    # Never expose exception strings: proxy URLs, signed CDN URLs and credentials
+    # can appear in them. The URL has already passed our source validation.
+    host = urlsplit(url).hostname
+    if host not in ASSET_HOSTS | {"api.github.com"}:
+        host = "GitHub"
+    pending, visited = [error], set()
+    tls_failure = False
+    while pending and len(visited) < 24:
+        cause = pending.pop()
+        if not isinstance(cause, BaseException) or id(cause) in visited:
+            continue
+        visited.add(id(cause))
+        if isinstance(cause, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(cause).upper():
+            tls_failure = True
+            break
+        pending.extend((cause.__cause__, cause.__context__))
+        pending.extend(argument for argument in cause.args if isinstance(argument, BaseException))
+    if tls_failure:
+        return _NetworkError(host, "TLS证书或握手失败（SSLError）", retryable=False)
+    reasons = (
+        (httpx.ConnectTimeout, "连接超时（ConnectTimeout）"),
+        (httpx.ReadTimeout, "读取超时（ReadTimeout）"),
+        (httpx.WriteTimeout, "发送超时（WriteTimeout）"),
+        (httpx.PoolTimeout, "连接等待超时（PoolTimeout）"),
+        (httpx.ConnectError, "连接中断（ConnectError）"),
+        (httpx.ReadError, "读取中断（ReadError）"),
+        (httpx.WriteError, "发送中断（WriteError）"),
+        (httpx.RemoteProtocolError, "远端连接异常（RemoteProtocolError）"),
+    )
+    for exception_type, reason in reasons:
+        if isinstance(error, exception_type):
+            return _NetworkError(host, reason, retryable=True)
+    reason = "代理连接失败（ProxyError）" if isinstance(error, httpx.ProxyError) else "网络请求失败（HTTPError）"
+    return _NetworkError(host, reason, retryable=False)
+
+
+def _retry_or_raise(error, stage, attempt):
+    if error.retryable and attempt < MAX_ATTEMPTS:
+        time.sleep(attempt)
+        return
+    raise ReleaseError(f"{stage}失败：{error.host} {error.reason}（已尝试 {attempt} 次）") from error
 
 
 def valid_version(value):
@@ -72,15 +129,29 @@ def _chunks(response, chunk_size):
 
 
 class ReleaseClient:
-    def __init__(self, *, client=None, github_token=None):
+    def __init__(self, *, client=None, github_token=None, proxy_configuration=None):
         self.github_token = os.environ.get("UPDATE_GITHUB_TOKEN", "") if github_token is None else github_token
         if not isinstance(self.github_token, str) or len(self.github_token) > 2048 or any(character.isspace() or ord(character) < 33 or ord(character) > 126 for character in self.github_token):
             raise ReleaseError("GitHub 只读令牌格式无效")
         self._owns_client = client is None
+        options = {}
+        if proxy_configuration is not None:
+            from .proxy import proxy_configuration as validate_proxy_configuration
+            configuration = validate_proxy_configuration({"proxy_configuration": proxy_configuration})
+            # A saved empty URL deliberately disables ambient HTTP(S)_PROXY.
+            options["trust_env"] = False
+            if configuration["url"]:
+                credentials = (configuration["username"], configuration["password"]) if configuration["username"] or configuration["password"] else None
+                options["proxy"] = httpx.Proxy(configuration["url"], auth=credentials)
         self.client = client or httpx.Client(
-            timeout=httpx.Timeout(60.0, connect=15.0),
+            timeout=httpx.Timeout(90.0, connect=30.0),
+            # NAS routers and intermediaries may discard an idle connection.
+            # A check/download gets fresh TLS connections instead of inheriting
+            # the long-running updater's pooled sockets from an earlier check.
+            limits=httpx.Limits(max_keepalive_connections=0),
             follow_redirects=False,
             headers={"User-Agent": "HomeStorage-Updater/1", "Accept-Encoding": "identity"},
+            **options,
         )
 
     def close(self):
@@ -112,6 +183,8 @@ class ReleaseClient:
                             raise ReleaseError("发布文件下载重定向无效")
                         current = _safe_asset_url(urljoin(current, location))
                         continue
+                    if response.status_code in (502, 503, 504):
+                        raise _NetworkError(urlsplit(current).hostname, f"服务暂时不可用（HTTP {response.status_code}）", retryable=True)
                     if response.status_code == 404 and not assets:
                         raise ReleaseError("无法访问稳定版本；可能尚未发布，或私有仓库需要配置 GitHub 只读令牌")
                     if response.status_code == 404:
@@ -139,16 +212,23 @@ class ReleaseClient:
                 finally:
                     response.close()
             except httpx.HTTPError as exc:
-                raise ReleaseError("无法连接 GitHub，请检查 NAS 网络后重试") from exc
+                raise _network_error(exc, current) from exc
         raise ReleaseError("发布文件下载重定向过多")
 
     def _json(self, url, maximum, *, assets=False):
-        chunks = bytearray()
-        with self._response(url, assets=assets, limit=maximum) as response:
-            for chunk in _chunks(response, 64 * 1024):
-                chunks.extend(chunk)
-                if len(chunks) > maximum:
-                    raise ReleaseError("发布信息超出大小限制")
+        # Retry the whole read from the original trusted URL, not a possibly
+        # expired signed redirect. A partial JSON body must never survive a retry.
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            chunks = bytearray()
+            try:
+                with self._response(url, assets=assets, limit=maximum) as response:
+                    for chunk in _chunks(response, 64 * 1024):
+                        chunks.extend(chunk)
+                        if len(chunks) > maximum:
+                            raise ReleaseError("发布信息超出大小限制")
+                break
+            except _NetworkError as exc:
+                _retry_or_raise(exc, "更新清单" if assets else "版本信息", attempt)
         try:
             payload = json.loads(chunks)
         except (ValueError, UnicodeError, RecursionError) as exc:
@@ -237,31 +317,42 @@ class ReleaseClient:
                 raise ReleaseError("私有发布文件需要配置 GitHub 只读令牌")
             url = release["asset_api_url"]
         destination = Path(destination)
-        received = 0
-        digest = hashlib.sha256()
         created = False
-        prefix = bytearray()
         try:
             descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             created = True
             with os.fdopen(descriptor, "wb") as output:
-                progress_callback(0, size)
-                with self._response(url, assets=True, limit=size) as response:
-                    for chunk in _chunks(response, 256 * 1024):
-                        received += len(chunk)
-                        if received > size:
-                            raise ReleaseError("镜像下载大小超出发布信息")
-                        if len(prefix) < 3:
-                            prefix.extend(chunk[:3 - len(prefix)])
-                        digest.update(chunk)
-                        output.write(chunk)
-                        progress_callback(received, size)
-                if received != size or digest.hexdigest() != release["sha256"]:
-                    raise ReleaseError("镜像下载不完整或校验失败，请重试")
-                if bytes(prefix) != b"\x1f\x8b\x08":
-                    raise ReleaseError("发布镜像压缩格式无效")
-                output.flush()
-                os.fsync(output.fileno())
+                for attempt in range(1, MAX_ATTEMPTS + 1):
+                    # Keep the exclusively created descriptor across attempts;
+                    # reopening the pathname would allow a symlink replacement.
+                    # Every retry starts over, including the digest and progress.
+                    output.seek(0)
+                    output.truncate(0)
+                    received = 0
+                    digest = hashlib.sha256()
+                    prefix = bytearray()
+                    progress_callback(0, size)
+                    try:
+                        with self._response(url, assets=True, limit=size) as response:
+                            for chunk in _chunks(response, 256 * 1024):
+                                received += len(chunk)
+                                if received > size:
+                                    raise ReleaseError("镜像下载大小超出发布信息")
+                                if len(prefix) < 3:
+                                    prefix.extend(chunk[:3 - len(prefix)])
+                                digest.update(chunk)
+                                output.write(chunk)
+                                progress_callback(received, size)
+                    except _NetworkError as exc:
+                        _retry_or_raise(exc, "镜像下载", attempt)
+                        continue
+                    if received != size or digest.hexdigest() != release["sha256"]:
+                        raise ReleaseError("镜像下载不完整或校验失败，请重试")
+                    if bytes(prefix) != b"\x1f\x8b\x08":
+                        raise ReleaseError("发布镜像压缩格式无效")
+                    output.flush()
+                    os.fsync(output.fileno())
+                    break
         except BaseException:
             if created:
                 destination.unlink(missing_ok=True)

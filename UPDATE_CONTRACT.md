@@ -79,6 +79,32 @@ checksummed manifest and release inheriting repository visibility. Reject
 version/tag/source mismatch.
 Docker image labels org.opencontainers.image.version/revision match build args.
 
+From 2.5.0, transient transport errors and HTTP 502/503/504 are retried at most
+three attempts per metadata/manifest/archive read, with 1s/2s backoff. Retry starts
+at the original trusted URL, never a saved signed CDN URL. JSON buffers and archive
+bytes/digest/progress are reset between attempts. TLS, authentication, source and
+integrity failures remain terminal. Messages expose only stage, allowlisted host
+and fixed error category; never raw exception text or signed URLs. Default GitHub
+connections are not kept alive, with 30s connect / 90s read timeout. A new check
+resets old download progress. Existing updater containers require an explicit
+updater upgrade; an app-only web update cannot install this helper fix.
+
+From 2.5.0 the authenticated settings APIs also support optional proxy_url,
+proxy_username and proxy_password. proxy_url accepts HTTP(S)/SOCKS5(H) endpoints
+without userinfo, query, fragment or non-root path; local LAN endpoints are allowed.
+Settings updates may contain only auto_update or only proxy fields; empty input is
+invalid. Password is write-only: blank preserves only when URL/user are unchanged,
+null clears, URL/user changes do not forward the old password to a new endpoint.
+Empty URL explicitly disables proxy and clears credentials. Status includes only
+proxy_url, proxy_username, proxy_password_set and proxy_source (environment/web).
+The private configuration is stored in updater state mode 600; never in app/AI
+settings or inventory export. A proxy change uses the updater job lock and is
+rejected during active jobs, while auto_update alone can still be changed. Save
+prepares a new client, persists configuration, then switches subsequent requests;
+failed persistence leaves the original client/settings intact. Before a web proxy
+configuration exists, environment proxy compatibility is retained; after explicit
+web configuration, the saved proxy or direct connection takes precedence.
+
 ## Deployment
 
 Dockerfile includes app + updater, HOMESTORAGE_VERSION/REVISION build metadata.

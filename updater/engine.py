@@ -181,7 +181,8 @@ class UpdateEngine:
             target, _, _ = self._discover()
             current, revision = self._current(target)
             self.store.update(phase="checking", message="正在检查 GitHub 稳定版本。",
-                              current_version=current, current_revision=revision)
+                              current_version=current, current_revision=revision,
+                              progress={"downloaded_bytes": 0, "total_bytes": 0})
             arch = self._arch()
             release = self.releases.latest(arch)
             self._validate_release(release)

@@ -17,6 +17,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from .version import VERSION_PATTERN
+from updater.proxy import ProxySettingsInput, normalize_proxy_url
 
 
 PHASES = frozenset({
@@ -42,8 +43,8 @@ class CheckInput(UpdateInput):
     pass
 
 
-class SettingsInput(UpdateInput):
-    auto_update: StrictBool
+class SettingsInput(ProxySettingsInput):
+    pass
 
 
 class InstallInput(UpdateInput):
@@ -160,6 +161,19 @@ def public_status(payload, current_version: str, current_revision: str, token: s
     if not isinstance(payload, dict):
         raise ValueError("Invalid updater status")
     result = unavailable_status(current_version, current_revision, SERVICE_MESSAGE)
+    # Preserve compatibility with older updaters: absence of these fields tells
+    # the browser that the helper itself must be upgraded once.
+    if all(key in payload for key in ("proxy_url", "proxy_username", "proxy_password_set", "proxy_source")):
+        try:
+            proxy_url = normalize_proxy_url(payload["proxy_url"])
+            username = payload["proxy_username"]
+            if not isinstance(username, str) or len(username) > 255 or any(ord(character) < 32 or ord(character) == 127 for character in username):
+                raise ValueError
+            if type(payload["proxy_password_set"]) is not bool or payload["proxy_source"] not in {"environment", "web"}:
+                raise ValueError
+            result.update(proxy_url=proxy_url, proxy_username=username, proxy_password_set=payload["proxy_password_set"], proxy_source=payload["proxy_source"])
+        except (ValueError, TypeError):
+            pass
     result["available"] = payload.get("available") is True
     result["auto_update"] = payload.get("auto_update") is True
     result["update_available"] = payload.get("update_available") is True
@@ -249,7 +263,7 @@ def build_updates_router(*, current_version: str, current_revision: str, passwor
 
     @router.patch("")
     async def settings(body: SettingsInput):
-        return await proxy("POST", "/v1/settings", body.model_dump())
+        return await proxy("POST", "/v1/settings", body.model_dump(exclude_unset=True))
 
     @router.post("/install")
     async def install(body: InstallInput):
