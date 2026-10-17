@@ -128,6 +128,38 @@ function date(value, withTime = false) {
 function today() { return new Intl.DateTimeFormat('en-CA', {timeZone: state.timezone, year: 'numeric', month: '2-digit', day: '2-digit'}).format(new Date()); }
 function timezoneLabel() { return state.timezone === 'Asia/Shanghai' ? '北京时间' : new Intl.DateTimeFormat('zh-CN', {timeZone: state.timezone, timeZoneName: 'long'}).formatToParts(new Date()).find(part => part.type === 'timeZoneName')?.value || state.timezone; }
 function imageUrl(value) { return typeof value === 'string' && /^\/uploads\/[A-Za-z0-9._-]+$/.test(value) ? value : ''; }
+function itemVisual(item, caption = false) {
+  const photo = imageUrl(item.image_url);
+  return `<span class="item-visual">${ItemVisuals.render(item, caption)}${photo ? `<img data-item-photo src="${esc(photo)}" alt="${esc(item.name || '物品')}的照片" loading="lazy" decoding="async">` : ''}</span>`;
+}
+function itemFormVisual(form) {
+  const name = form.elements.name.value;
+  return {name, tags: name.trim() ? form.elements.tags.value : '', category: name.trim() ? state.categories.find(category => String(category.id) === form.elements.category_id.value)?.name || '' : '', image_url: form.dataset.image};
+}
+let itemPhotoPreviewUrl = null;
+function releaseItemPhotoPreview() {
+  if (itemPhotoPreviewUrl) URL.revokeObjectURL(itemPhotoPreviewUrl);
+  itemPhotoPreviewUrl = null;
+}
+function resetItemPhotoPreview(form) {
+  releaseItemPhotoPreview();
+  $('image-preview').innerHTML = itemVisual(itemFormVisual(form));
+  photoControls(form, Boolean(imageUrl(form.dataset.image)));
+}
+function refreshItemIcon(form) {
+  const art = form.querySelector('#image-preview .item-art');
+  if (art) art.outerHTML = ItemVisuals.render(itemFormVisual(form));
+}
+function photoControls(form, hasPhoto) {
+  form.querySelector('label[for="item-photo"]').innerHTML = `${icon('image')} ${hasPhoto ? '更换照片' : '添加照片'}`;
+  form.querySelector('[data-action="remove-photo"]').hidden = !hasPhoto;
+}
+// Image load errors do not bubble. Keep the local illustration underneath each photo
+// and hide only the failed image, without changing the saved item or retrying requests.
+document.addEventListener('error', event => {
+  if (event.target instanceof HTMLImageElement && event.target.hasAttribute('data-item-photo')) event.target.hidden = true;
+}, true);
+
 function badge(status) { return `<span class="status-chip status-${esc(status)}">${esc(STATUS[status] || status)}</span>`; }
 function archived(item) { return Boolean(item.archived_at); }
 function archiveBadge(item) { return archived(item) ? '<span class="status-chip status-archived">已归档</span>' : ''; }
@@ -179,9 +211,8 @@ function renderDashboard(data) {
   $('page-view').innerHTML = `<section class="hero-card dashboard-hero" aria-labelledby="dashboard-hero-title"><div class="hero-copy"><span class="kicker hero-kicker">A LITTLE ORDER. A BETTER LIFE.</span><h2 id="dashboard-hero-title">每一件物品，<br>都有自己的位置。</h2><p>少一点翻找，多一点从容。<br>记录家中物品，让需要的东西触手可及。</p><div class="hero-actions"><button class="button primary" data-action="browse-items">${icon('search')} 查找家中物品</button><button class="button secondary" data-action="add-item">${icon('plus')} 登记物品</button></div><div class="hero-tags"><span>${icon('shield')} 数据留在家中</span><span>${icon('history')} 每次取放可追溯</span></div></div><div class="hero-visual">${illustration}</div></section><div class="metric-grid">${metrics.map(([symbol, value, label, sub, color, valueFilter, link]) => `<button type="button" class="metric-card stat-card" data-action="stat-filter" data-value="${valueFilter}" aria-label="${label} ${number(value)}${symbol === 'pin' ? '处' : '种'}，${link}"><span class="metric-icon metric-${color}">${icon(symbol)}</span><span class="metric-value">${number(value)}<span>${symbol === 'pin' ? '处' : '种'}</span></span><span class="metric-label">${label}</span><span class="metric-trend">${esc(sub)}</span><span class="metric-link">${link} ${icon('arrow')}</span></button>`).join('')}</div>${aiPanel()}<div class="dashboard-grid"><section class="panel"><div class="panel-header"><div><h2 class="panel-title">${icon('clock')} 到期提醒</h2><p class="panel-subtitle">留意保质期，让每一份物品物尽其用</p></div><a class="text-link" href="#expiry">查看全部 ${icon('arrow')}</a></div><div class="panel-body">${data.expiring_items.length ? data.expiring_items.slice(0, 4).map(expiryRow).join('') : empty('暂时没有到期提醒', '填写物品有效期，临近到期时会在这里提醒你。', null, '', 'leaf')}</div></section><section class="panel"><div class="panel-header"><div><h2 class="panel-title">${icon('history')} 最近动态</h2><p class="panel-subtitle">看看家里物品的新变化</p></div><a class="text-link" href="#history">全部记录 ${icon('arrow')}</a></div><div class="panel-body">${data.recent_logs.length ? data.recent_logs.slice(0, 5).map(log => logRow(log, true)).join('') : empty('你的家庭档案，从这里开始', '登记第一件物品，它的每一次变化都会被记住。')}</div></section></div>${data.total_items === 0 ? `<section class="getting-started"><div>${icon('pin')}<span><strong>给物品一个准确的地址</strong><span>先添加房间、柜子或收纳箱，再开始登记物品。</span></span></div><button class="button secondary" data-action="add-location">${icon('plus')} 添加收纳位置</button></section>` : ''}`;
 }
 function itemCard(item) {
-  const photo = imageUrl(item.image_url);
   const description = [item.brand, item.model].filter(Boolean).join(' · ');
-  return `<button class="item-card" data-action="detail" data-id="${item.id}"><span class="item-photo">${photo ? `<img src="${esc(photo)}" alt="${esc(item.name)}的照片" loading="lazy" decoding="async">` : `<span class="item-photo-placeholder">${icon('box')}<span>未添加照片</span></span>`}<span class="item-photo-status">${badge(item.status)}${archiveBadge(item)}</span></span><span class="item-body"><span class="item-meta-wrap"><span class="item-meta">${esc(item.category || '未分类')}</span></span><span class="item-title" title="${esc(item.name)}">${esc(item.name)}</span>${description ? `<span class="item-description" title="${esc(description)}">${esc(description)}</span>` : ''}<span class="item-path" title="${esc(item.location_path)}">${icon('pin')}${esc(item.location_path)}</span>${expiryBadge(item)}<span class="item-bottom"><span class="item-quantity"><strong>${number(item.quantity)}</strong> ${esc(item.unit)}</span><span class="item-date">${date(item.stored_date)} 入库</span></span></span></button>`;
+  return `<button class="item-card" data-action="detail" data-id="${item.id}"><span class="item-photo">${itemVisual(item, true)}<span class="item-photo-status">${badge(item.status)}${archiveBadge(item)}</span></span><span class="item-body"><span class="item-meta-wrap"><span class="item-meta">${esc(item.category || '未分类')}</span></span><span class="item-title" title="${esc(item.name)}">${esc(item.name)}</span>${description ? `<span class="item-description" title="${esc(description)}">${esc(description)}</span>` : ''}<span class="item-path" title="${esc(item.location_path)}">${icon('pin')}${esc(item.location_path)}</span>${expiryBadge(item)}<span class="item-bottom"><span class="item-quantity"><strong>${number(item.quantity)}</strong> ${esc(item.unit)}</span><span class="item-date">${date(item.stored_date)} 入库</span></span></span></button>`;
 }
 function itemFilters() {
   const f = state.filters;
@@ -567,7 +598,9 @@ async function openItemForm(id = null) {
   try {
     const item = id ? await api(`/api/items/${id}`) : {quantity: 1, unit: '件', warning_days: 7, category_id: state.categories.find(cat => cat.active && cat.name === '其他')?.id || state.categories.find(cat => cat.active)?.id || '', stored_date: today(), location_id: state.filters.location_id || state.selectedLocation || state.locations[0]?.id || ''};
     const photo = imageUrl(item.image_url);
-    openModal('item-modal', `<form id="item-form" data-id="${id || ''}" data-image="${esc(item.image_url || '')}">${modalHeader(id ? '编辑物品档案' : '登记一件物品', 'item-modal-title', id ? '库存和位置变化请在物品详情中操作，会自动留痕。' : '拍张照、选个位置，让物品有迹可循。')}<div class="modal-body"><div class="image-upload"><div class="image-preview" id="image-preview">${photo ? `<img src="${esc(photo)}" alt="物品照片">` : icon('image')}</div><div><label class="button secondary button-small" for="item-photo">${icon('image')} ${photo ? '更换照片' : '添加照片'}</label><input id="item-photo" type="file" name="photo" accept="image/jpeg,image/png,image/webp" class="screen-reader"><p class="help-text">JPG、PNG 或 WebP，最大 10 MB</p>${photo ? '<button type="button" class="text-link" data-action="remove-photo">移除照片</button>' : ''}</div></div><div class="form-grid">${field('物品名称 *', 'name', item.name, 'text', 'required maxlength="200" placeholder="例如：便携电动打气筒"', true)}<label class="form-field"><span class="field-label">物品分类 *</span><select class="form-control" name="category_id" required>${option('', '请选择分类', item.category_id)}${categoryOptions(item.category_id)}</select><span class="help-text">在“分类管理”中自定义分类。</span></label>${id ? `<div class="form-field"><span class="field-label">当前收纳位置</span><div class="form-control static-field">${esc(item.location_path)}</div></div>` : `<label class="form-field"><span class="field-label">收纳位置 *</span><select name="location_id" class="form-control" required>${locationOptions(item.location_id)}</select></label>`}${id ? `<div class="form-field"><span class="field-label">当前库存</span><div class="form-control static-field">${number(item.quantity)} ${esc(item.unit)} · ${esc(STATUS[item.status])}</div></div>` : field('数量 *', 'quantity', item.quantity, 'number', 'required min="0" max="1000000000" step="1"')}${field('计量单位', 'unit', item.unit, 'text', 'required maxlength="30" placeholder="件、包、瓶…"')}${field('品牌', 'brand', item.brand, 'text', 'maxlength="120"')}${field('型号 / 规格', 'model', item.model, 'text', 'maxlength="120"')}${field('入库日期 *', 'stored_date', item.stored_date, 'date', 'required')}${field('购买日期', 'purchase_date', item.purchase_date, 'date')}${field('购买价格（元）', 'purchase_price', item.purchase_price ?? '', 'number', 'min="0" step="0.01"')}${field('有效期至', 'expires_on', item.expires_on, 'date')}${field('提前提醒（天）', 'warning_days', item.warning_days, 'number', 'required min="0" max="3650" step="1"')}${field('标签', 'tags', item.tags, 'text', 'maxlength="500" placeholder="用逗号分隔，例如：露营,常用"')}<label class="form-field span-2"><span class="field-label">备注</span><textarea class="form-control" name="notes" rows="3" maxlength="4000" placeholder="配件、注意事项，或你想记住的小细节…">${esc(item.notes)}</textarea></label></div><p class="error-banner form-error" hidden role="alert"></p></div><div class="modal-footer"><button type="button" class="button secondary" data-action="close-modal">取消</button><button type="submit" class="button primary">${icon('check')} ${id ? '保存档案' : '登记物品'}</button></div></form>`);
+    releaseItemPhotoPreview();
+    openModal('item-modal', `<form id="item-form" data-id="${id || ''}" data-image="${esc(item.image_url || '')}">${modalHeader(id ? '编辑物品档案' : '登记一件物品', 'item-modal-title', id ? '库存和位置变化请在物品详情中操作，会自动留痕。' : '拍张照、选个位置，让物品有迹可循。')}<div class="modal-body"><div class="image-upload"><div class="image-preview" id="image-preview">${itemVisual(item)}</div><div><label class="button secondary button-small" for="item-photo">${icon('image')} ${photo ? '更换照片' : '添加照片'}</label><input id="item-photo" type="file" name="photo" accept="image/jpeg,image/png,image/webp" class="screen-reader"><p class="help-text">JPG、PNG 或 WebP，最大 10 MB</p><p class="help-text image-auto-hint">没有照片？会按名称和分类自动搭配图标。</p><button type="button" class="text-link" data-action="remove-photo"${photo ? '' : ' hidden'}>移除照片</button></div></div><div class="form-grid">${field('物品名称 *', 'name', item.name, 'text', 'required maxlength="200" placeholder="例如：便携电动打气筒"', true)}<label class="form-field"><span class="field-label">物品分类 *</span><select class="form-control" name="category_id" required>${option('', '请选择分类', item.category_id)}${categoryOptions(item.category_id)}</select><span class="help-text">在“分类管理”中自定义分类。</span></label>${id ? `<div class="form-field"><span class="field-label">当前收纳位置</span><div class="form-control static-field">${esc(item.location_path)}</div></div>` : `<label class="form-field"><span class="field-label">收纳位置 *</span><select name="location_id" class="form-control" required>${locationOptions(item.location_id)}</select></label>`}${id ? `<div class="form-field"><span class="field-label">当前库存</span><div class="form-control static-field">${number(item.quantity)} ${esc(item.unit)} · ${esc(STATUS[item.status])}</div></div>` : field('数量 *', 'quantity', item.quantity, 'number', 'required min="0" max="1000000000" step="1"')}${field('计量单位', 'unit', item.unit, 'text', 'required maxlength="30" placeholder="件、包、瓶…"')}${field('品牌', 'brand', item.brand, 'text', 'maxlength="120"')}${field('型号 / 规格', 'model', item.model, 'text', 'maxlength="120"')}${field('入库日期 *', 'stored_date', item.stored_date, 'date', 'required')}${field('购买日期', 'purchase_date', item.purchase_date, 'date')}${field('购买价格（元）', 'purchase_price', item.purchase_price ?? '', 'number', 'min="0" step="0.01"')}${field('有效期至', 'expires_on', item.expires_on, 'date')}${field('提前提醒（天）', 'warning_days', item.warning_days, 'number', 'required min="0" max="3650" step="1"')}${field('标签', 'tags', item.tags, 'text', 'maxlength="500" placeholder="用逗号分隔，例如：露营,常用"')}<label class="form-field span-2"><span class="field-label">备注</span><textarea class="form-control" name="notes" rows="3" maxlength="4000" placeholder="配件、注意事项，或你想记住的小细节…">${esc(item.notes)}</textarea></label></div><p class="error-banner form-error" hidden role="alert"></p></div><div class="modal-footer"><button type="button" class="button secondary" data-action="close-modal">取消</button><button type="submit" class="button primary">${icon('check')} ${id ? '保存档案' : '登记物品'}</button></div></form>`);
+    refreshItemIcon($('item-form'));
   } catch (error) { toast(error.message, true); }
 }
 async function submitItem(form) {
@@ -600,8 +633,7 @@ async function openDetail(id) {
     const [item, logs] = await Promise.all([api(`/api/items/${id}`), api(`/api/logs?item_id=${id}&limit=50`)]);
     state.detail = item;
     const actions = archived(item) ? [] : {in_stock: ['take_out', 'move', 'lend', 'consume', 'restock', 'discard', 'lost'], in_use: ['return', 'lend', 'discard', 'lost'], lent: ['return', 'discard', 'lost'], depleted: ['restock'], discarded: [], lost: []}[item.status] || [];
-    const photo = imageUrl(item.image_url);
-    openModal('detail-modal', `${modalHeader('物品详情', 'detail-modal-title')}<div class="modal-body"><div class="detail-hero"><div class="detail-image">${photo ? `<img src="${esc(photo)}" alt="${esc(item.name)}的照片">` : icon('box')}</div><div class="detail-info"><span class="eyebrow">${esc(item.category)}</span><h3 class="detail-title">${esc(item.name)}</h3><div class="detail-badges">${badge(item.status)}${archiveBadge(item)}${expiryBadge(item)}</div><p class="item-path">${icon('pin')}${esc(item.location_path)}</p><div class="detail-quantity"><strong>${number(item.quantity)}</strong> ${esc(item.unit)}</div></div></div><div class="detail-grid">${datum('品牌 / 型号', [item.brand, item.model].filter(Boolean).join(' / '))}${datum('入库日期', date(item.stored_date))}${datum('购买日期', date(item.purchase_date))}${datum('购买价格', item.purchase_price == null ? '' : `¥ ${number(item.purchase_price)}`)}${datum('有效期至', date(item.expires_on))}${datum('提前提醒', `${item.warning_days} 天`)}${datum('标签', item.tags)}${datum('档案更新', date(item.updated_at, true))}${archived(item) ? datum('归档时间', date(item.archived_at, true)) : ''}</div>${item.notes ? `<div class="detail-notes"><span class="detail-label">备注</span><p>${esc(item.notes)}</p></div>` : ''}${actions.length ? `<h3 class="section-title">物品操作</h3><div class="action-grid">${actions.map(action => `<button class="button ${['discard', 'lost'].includes(action) ? 'subtle action-muted' : 'secondary'}" data-action="item-action" data-value="${action}" data-id="${item.id}">${icon(action === 'move' ? 'pin' : action === 'discard' ? 'trash' : action === 'restock' ? 'plus' : action === 'lost' ? 'alert' : 'refresh')}${esc(ACTION[action])}</button>`).join('')}</div><p class="help-text">取出、归还与借出会更新整件物品的状态；数量变化请使用消耗或补充。</p>` : `<p class="help-text">${archived(item) ? '物品已归档，保留库存、位置和历史。恢复后可继续取放。' : '当前状态没有可用的库存操作。档案和历史仍然保留。'}</p>`}<h3 class="section-title">操作记录</h3><div class="detail-logs">${logs.length ? logs.map(log => logRow(log, true)).join('') : '<p class="muted">暂无记录</p>'}</div></div><div class="modal-footer"><button class="button secondary" data-action="close-modal">关闭</button><button class="button secondary" data-action="${archived(item) ? 'restore-item' : 'archive-item'}" data-id="${item.id}">${icon(archived(item) ? 'refresh' : 'package')} ${archived(item) ? '恢复物品' : '归档物品'}</button><button class="button primary" data-action="edit-item" data-id="${item.id}">${icon('edit')} 编辑档案</button></div>`);
+    openModal('detail-modal', `${modalHeader('物品详情', 'detail-modal-title')}<div class="modal-body"><div class="detail-hero"><div class="detail-image">${itemVisual(item)}</div><div class="detail-info"><span class="eyebrow">${esc(item.category)}</span><h3 class="detail-title">${esc(item.name)}</h3><div class="detail-badges">${badge(item.status)}${archiveBadge(item)}${expiryBadge(item)}</div><p class="item-path">${icon('pin')}${esc(item.location_path)}</p><div class="detail-quantity"><strong>${number(item.quantity)}</strong> ${esc(item.unit)}</div></div></div><div class="detail-grid">${datum('品牌 / 型号', [item.brand, item.model].filter(Boolean).join(' / '))}${datum('入库日期', date(item.stored_date))}${datum('购买日期', date(item.purchase_date))}${datum('购买价格', item.purchase_price == null ? '' : `¥ ${number(item.purchase_price)}`)}${datum('有效期至', date(item.expires_on))}${datum('提前提醒', `${item.warning_days} 天`)}${datum('标签', item.tags)}${datum('档案更新', date(item.updated_at, true))}${archived(item) ? datum('归档时间', date(item.archived_at, true)) : ''}</div>${item.notes ? `<div class="detail-notes"><span class="detail-label">备注</span><p>${esc(item.notes)}</p></div>` : ''}${actions.length ? `<h3 class="section-title">物品操作</h3><div class="action-grid">${actions.map(action => `<button class="button ${['discard', 'lost'].includes(action) ? 'subtle action-muted' : 'secondary'}" data-action="item-action" data-value="${action}" data-id="${item.id}">${icon(action === 'move' ? 'pin' : action === 'discard' ? 'trash' : action === 'restock' ? 'plus' : action === 'lost' ? 'alert' : 'refresh')}${esc(ACTION[action])}</button>`).join('')}</div><p class="help-text">取出、归还与借出会更新整件物品的状态；数量变化请使用消耗或补充。</p>` : `<p class="help-text">${archived(item) ? '物品已归档，保留库存、位置和历史。恢复后可继续取放。' : '当前状态没有可用的库存操作。档案和历史仍然保留。'}</p>`}<h3 class="section-title">操作记录</h3><div class="detail-logs">${logs.length ? logs.map(log => logRow(log, true)).join('') : '<p class="muted">暂无记录</p>'}</div></div><div class="modal-footer"><button class="button secondary" data-action="close-modal">关闭</button><button class="button secondary" data-action="${archived(item) ? 'restore-item' : 'archive-item'}" data-id="${item.id}">${icon(archived(item) ? 'refresh' : 'package')} ${archived(item) ? '恢复物品' : '归档物品'}</button><button class="button primary" data-action="edit-item" data-id="${item.id}">${icon('edit')} 编辑档案</button></div>`);
   } catch (error) { toast(error.message, true); }
 }
 async function openAction(id, action) {
@@ -681,7 +713,7 @@ function draftFields(draft) {
   return Object.entries(payload).filter(([key, value]) => DRAFT_LABELS[key] && value !== null && value !== '').map(([key, value]) => `<div><dt>${esc(key === 'quantity' && draft.action === 'restock' ? '补充数量' : DRAFT_LABELS[key])}</dt><dd>${esc(Array.isArray(value) ? value.join('、') : value)}</dd></div>`).join('');
 }
 function aiItemCard(item) {
-  return `<button type="button" class="ai-item-result" data-action="detail" data-id="${Number(item.id)}"><span><strong>${esc(item.name)}</strong><span>物品 #${number(item.id)} · ${number(item.quantity)} ${esc(item.unit)} · ${esc(STATUS[item.status] || item.status)}${archived(item) ? ' · 已归档' : ''}</span><span>${esc(item.location_path)}</span></span>${icon('chevron')}</button>`;
+  return `<button type="button" class="ai-item-result" data-action="detail" data-id="${Number(item.id)}"><span class="ai-item-visual">${itemVisual(item)}</span><span class="ai-item-copy"><strong>${esc(item.name)}</strong><span>物品 #${number(item.id)} · ${number(item.quantity)} ${esc(item.unit)} · ${esc(STATUS[item.status] || item.status)}${archived(item) ? ' · 已归档' : ''}</span><span>${esc(item.location_path)}</span></span>${icon('chevron')}</button>`;
 }
 function aiDraftCard(draft) {
   const titles = {create: '待确认登记', restock: '待确认补充', move: '待确认移库', archive: '待确认归档'};
@@ -868,7 +900,7 @@ document.addEventListener('click', async event => {
   if (action === 'expiry-tab') { state.expiry = target.dataset.value; await refreshPage(); if (state.route === 'expiry') $(`expiry-tab-${state.expiry}`)?.focus({preventScroll: true}); return; }
   if (action === 'clear-filters') { state.filters = {q: '', category: '', category_id: '', status: '', location_id: '', archived: 'false'}; history.replaceState(null, '', `${location.pathname}${location.hash}`); refreshPage(); return; }
   if (action === 'retry') { bootstrap(); return; }
-  if (action === 'remove-photo') { const form = target.closest('form'); form.dataset.image = ''; form.querySelector('[name="photo"]').value = ''; $('image-preview').innerHTML = icon('image'); target.remove(); return; }
+  if (action === 'remove-photo') { const form = target.closest('form'); form.dataset.image = ''; form.elements.photo.value = ''; resetItemPhotoPreview(form); return; }
   if (action === 'export') {
     target.disabled = true;
     try { const response = await fetch('/api/export', {credentials: 'same-origin'}); if (response.status === 401) { showLogin(); throw new Error('请登录后导出数据。'); } if (!response.ok) throw new Error('导出失败，请稍后重试。'); const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `homestorage-${today()}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); toast('数据已导出。照片请随 NAS 数据目录一起备份。'); } catch (error) { toast(error.message, true); } finally { target.disabled = false; }
@@ -877,6 +909,7 @@ document.addEventListener('click', async event => {
   if (action === 'logout') { try { await post('/api/logout', {}); document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close()); showLogin(); $('login-form').reset(); } catch (error) { toast(error.message, true); } }
 });
 document.addEventListener('input', event => {
+  if (event.target.closest('#item-form') && ['name', 'tags'].includes(event.target.name)) refreshItemIcon(event.target.form);
   if (event.target.closest('#ai-settings-form')) {
     state.aiSettings.message = '';
     if (['api_key', 'transcription_api_key'].includes(event.target.name) && event.target.value) aiSettingsForm().elements[`clear_${event.target.name}`].checked = false;
@@ -896,13 +929,22 @@ document.addEventListener('change', event => {
     if (target.name.startsWith('clear_') && target.checked) aiSettingsForm().elements[target.name.slice(6)].value = '';
     renderAISettings(); return;
   }
+  if (target.closest('#item-form') && target.name === 'category_id') refreshItemIcon(target.form);
   if (target.id === 'auto-update') { state.updates.preference = target.checked; state.updates.savedMessage = ''; renderSettings(); $('auto-update')?.focus({preventScroll: true}); return; }
   if (target.dataset.filter) { state.filters[target.dataset.filter] = target.value; if (target.dataset.filter === 'category_id') state.filters.category = ''; refreshPage(); }
-  if (target.id === 'item-photo' && target.files[0]) {
-    const file = target.files[0];
-    if (file.size > 10 * 1024 * 1024) { target.value = ''; toast('照片超过 10 MB，请选择较小的文件。', true); return; }
-    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) { target.value = ''; toast('请选择 JPG、PNG 或 WebP 照片。', true); return; }
-    const objectUrl = URL.createObjectURL(file); const img = document.createElement('img'); img.alt = '待上传的物品照片'; img.src = objectUrl; img.onload = () => URL.revokeObjectURL(objectUrl); $('image-preview').replaceChildren(img);
+  if (target.id === 'item-photo') {
+    const form = target.form, file = target.files[0];
+    if (!file) { resetItemPhotoPreview(form); return; }
+    if (file.size > 10 * 1024 * 1024) { target.value = ''; resetItemPhotoPreview(form); toast('照片超过 10 MB，请选择较小的文件。', true); return; }
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) { target.value = ''; resetItemPhotoPreview(form); toast('请选择 JPG、PNG 或 WebP 照片。', true); return; }
+    releaseItemPhotoPreview();
+    const objectUrl = URL.createObjectURL(file); itemPhotoPreviewUrl = objectUrl;
+    const img = document.createElement('img'); img.alt = '待上传的物品照片'; img.setAttribute('data-item-photo', '');
+    img.onload = () => { URL.revokeObjectURL(objectUrl); if (itemPhotoPreviewUrl === objectUrl) itemPhotoPreviewUrl = null; };
+    img.onerror = () => { URL.revokeObjectURL(objectUrl); if (!img.isConnected) return; target.value = ''; resetItemPhotoPreview(form); toast('这张照片无法读取，请重新选择。', true); };
+    $('image-preview').innerHTML = itemVisual({...itemFormVisual(form), image_url: ''});
+    $('image-preview').querySelector('.item-visual').append(img); img.src = objectUrl;
+    photoControls(form, true);
   }
 });
 document.addEventListener('submit', async event => {
@@ -940,7 +982,7 @@ document.addEventListener('keydown', event => {
   $(`expiry-tab-${value}`)?.click();
 });
 document.querySelectorAll('dialog').forEach(dialog => {
-  dialog.addEventListener('close', () => cancelMotion(dialog));
+  dialog.addEventListener('close', () => { cancelMotion(dialog); if (dialog.id === 'item-modal') releaseItemPhotoPreview(); });
   dialog.addEventListener('click', event => { if (event.target === dialog) { const bounds = dialog.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close(); } });
 });
 let refreshingReminders = false;
