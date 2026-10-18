@@ -32,6 +32,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$RELEASE_REVISION"
           case "$RELEASE_TAG" in v*) VERSION="${RELEASE_TAG#v}" ;; *) exit 1 ;; esac
           python scripts/release_manifest.py --version "$VERSION" --revision "$RELEASE_REVISION" --check-source-only
+          python scripts/check_handover.py --version "$VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "revision=$RELEASE_REVISION" >> "$GITHUB_OUTPUT"
       - run: python -m pip install -r requirements-dev.txt
@@ -93,6 +94,10 @@ jobs:
           VERSION: ${{ needs.verify.outputs.version }}
           REVISION: ${{ needs.verify.outputs.revision }}
         run: python scripts/release_manifest.py --version "$VERSION" --revision "$REVISION" --asset-dir release-assets
+      - name: Attach the versioned handover
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: cp "docs/handover/$VERSION.md" "release-assets/homestorage-handover-$VERSION.md"
       - name: Publish a new GitHub release without overwriting existing assets
         env:
           GH_TOKEN: ${{ github.token }}

@@ -9,7 +9,10 @@
   <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/v3.css">
   <script src="/static/item-visuals.js" defer></script>
+  <script src="/static/scanner.js" defer></script>
+  <script src="/static/v3.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
@@ -20,7 +23,8 @@
       <div class="login-logo" aria-hidden="true">⌂</div>
       <p class="eyebrow">HOME, IN ORDER</p>
       <h1>欢迎回家</h1>
-      <p class="muted">输入家庭共享密码，打开你的物品档案。</p>
+      <p class="muted">使用家庭账号，打开你的物品档案。</p>
+      <label class="form-field"><span class="field-label">用户名</span><input class="form-control" name="username" type="text" autocomplete="username" value="admin" maxlength="64" required></label>
       <label class="form-field"><span class="field-label">访问密码</span><input class="form-control" name="password" type="password" autocomplete="current-password" maxlength="4096" required autofocus></label>
       <p id="login-error" class="error-banner" hidden role="alert"></p>
       <button class="button primary" type="submit">进入 HomeStorage</button>
@@ -54,6 +58,7 @@
   <dialog class="modal" id="category-modal" aria-labelledby="category-modal-title"></dialog>
   <dialog class="modal" id="ai-help-modal" aria-labelledby="ai-help-modal-title"></dialog>
   <dialog class="modal" id="qr-modal" aria-labelledby="qr-modal-title"></dialog>
+  <dialog class="modal v3-modal" id="v3-modal" aria-labelledby="v3-modal-title"></dialog>
   <dialog class="modal" id="update-modal" aria-labelledby="update-modal-title"></dialog>
 </body>
 </html>

@@ -228,7 +228,9 @@ class AIWebSettingsTest(unittest.TestCase):
         self.ok(self.client.patch("/api/settings/ai", json={"model": "same-origin"}, headers={"origin": "http://testserver"}))
 
     def test_passwordless_inventory_and_environment_ai_work_but_settings_are_forbidden(self):
-        with TestClient(create_app(data_dir=self.data_dir, password="")) as public:
+        # Passwordless development is available only before household accounts
+        # exist; removing an environment variable cannot unlock a private DB.
+        with TestClient(create_app(data_dir=self.data_dir / "fresh-public", password="")) as public:
             self.assertEqual(public.get("/api/settings/ai").status_code, 403)
             self.assertEqual(public.patch("/api/settings/ai", json={"model": "no-password"}).status_code, 403)
             self.assertTrue(self.ok(public.get("/api/ai/status"))["enabled"])

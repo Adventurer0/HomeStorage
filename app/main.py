@@ -10,7 +10,8 @@ import secrets
 import sqlite3
 import time
 import warnings
-from contextlib import asynccontextmanager
+import unicodedata
+from contextlib import asynccontextmanager, closing
 from datetime import date, datetime, timezone as utc_timezone
 from pathlib import Path
 from typing import Annotated, Literal
@@ -30,6 +31,12 @@ from .db import DEFAULT_CATEGORIES, connect, initialize, transaction
 from .ai_settings import AISettingsStore, build_ai_settings_router
 from .updates import build_updates_router, maintenance_active, update_state_dir
 from .version import runtime_revision, runtime_version
+from .security import HouseholdSecurity, build_household_router, request_actor
+from .analytics import initialize_analytics, build_analytics_router, record_search
+from .transfer import initialize_transfer, build_transfer_router
+from .backups import initialize_backups, build_backup_router
+from .organize import OrganizationManager, build_organize_router
+from .integrations import initialize_integrations, build_integrations_router
 
 
 CATEGORIES = DEFAULT_CATEGORIES
@@ -53,6 +60,7 @@ class InputModel(BaseModel):
 
 
 class LoginInput(InputModel):
+    username: str = Field(default="admin", min_length=1, max_length=64)
     password: str = Field(max_length=4096)
 
     # Password whitespace is significant even though descriptive fields are trimmed.
@@ -97,6 +105,7 @@ class ItemFields(InputModel):
     image_url: str | None = Field(default=None, max_length=2048)
     brand: str = Field(default="", max_length=120)
     model: str = Field(default="", max_length=120)
+    barcode: str = Field(default="", max_length=128)
     tags: str = Field(default="", max_length=1000)
     notes: str = Field(default="", max_length=10000)
     stored_date: date | None = None
@@ -104,6 +113,13 @@ class ItemFields(InputModel):
     purchase_price: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     expires_on: date | None = None
     warning_days: WarningDays = 7
+
+    @field_validator("barcode", mode="before")
+    @classmethod
+    def safe_barcode(cls, value):
+        if isinstance(value, str) and any(unicodedata.category(char).startswith("C") for char in value):
+            raise ValueError("条码不能包含控制字符")
+        return value
 
     @field_validator("image_url")
     @classmethod
@@ -131,6 +147,7 @@ class ItemPatch(InputModel):
     image_url: str | None = Field(default=None, max_length=2048)
     brand: str | None = Field(default=None, max_length=120)
     model: str | None = Field(default=None, max_length=120)
+    barcode: str | None = Field(default=None, max_length=128)
     tags: str | None = Field(default=None, max_length=1000)
     notes: str | None = Field(default=None, max_length=10000)
     stored_date: date | None = None
@@ -138,6 +155,11 @@ class ItemPatch(InputModel):
     purchase_price: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     expires_on: date | None = None
     warning_days: WarningDays | None = None
+
+    @field_validator("barcode", mode="before")
+    @classmethod
+    def safe_barcode(cls, value):
+        return ItemFields.safe_barcode(value)
 
 
 class ActionInput(InputModel):
@@ -271,11 +293,14 @@ def resolve_category(connection, *, category_id=None, name=None, current_id=None
 
 
 def audit(connection, action, *, item=None, source=None, destination=None, delta=0, note=""):
-    connection.execute(
-        "INSERT INTO logs (action,item_id,item_name,from_location,to_location,quantity_delta,note,created_at) "
-        "VALUES (?,?,?,?,?,?,?,?)",
-        (action, item["id"] if item else None, item["name"] if item else "", source, destination, delta, note, now()),
+    actor = request_actor.get() or {}
+    cursor = connection.execute(
+        "INSERT INTO logs (action,item_id,item_name,from_location,to_location,quantity_delta,note,created_at,actor_user_id,actor_name) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (action, item["id"] if item else None, item["name"] if item else "", source, destination, delta, note, now(),
+         actor.get("id"), actor.get("display_name") or actor.get("username", "")),
     )
+    return cursor.lastrowid
 
 
 def canonical_origin(value):
@@ -340,8 +365,22 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
         initialize(data_path / "homestorage.sqlite3")
         ai_settings.initialize()
         key = stable_key(data_path)
-        application.state.session_key = hmac.digest(key, configured_password.encode("utf-8"), "sha256")
-        yield
+        application.state.session_key = key
+        security.initialize(key)
+        initialize_analytics(services["connect"])
+        initialize_transfer(services["connect"])
+        initialize_backups(services["connect"])
+        with closing(services["connect"]()) as database:
+            initialize_integrations(database)
+        organization_manager.initialize()
+        try:
+            await backup_manager.start()
+            yield
+        finally:
+            try:
+                await organization_manager.shutdown()
+            finally:
+                await backup_manager.stop()
 
     current_version = runtime_version()
     current_revision = runtime_revision()
@@ -350,6 +389,8 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
     application.state.data_dir = data_path
     application.state.db_path = data_path / "homestorage.sqlite3"
     ai_settings = AISettingsStore(lambda: connect(application.state.db_path))
+    security = HouseholdSecurity(lambda: connect(application.state.db_path), configured_password, now)
+    application.state.security = security
 
     def connection():
         database = connect(application.state.db_path)
@@ -364,38 +405,51 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
         return datetime.now(app_timezone).date()
 
     def authenticated(request):
-        if not configured_password:
-            return True
-        token = request.cookies.get(COOKIE_NAME, "")
-        try:
-            expires, nonce, signature = token.split(".")
-            payload = f"{expires}.{nonce}"
-            expected = hmac.new(application.state.session_key, payload.encode(), hashlib.sha256).hexdigest()
-            return int(expires) > time.time() and hmac.compare_digest(signature, expected)
-        except (ValueError, AttributeError):
-            return False
+        return getattr(request.state, "user", None) is not None
 
     @application.middleware("http")
     async def access_control(request: Request, call_next):
+        path = request.url.path
+        external_read = request.method == "GET" and path in {
+            "/api/external/v1/items", "/api/external/v1/locations", "/api/external/v1/categories",
+        }
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             origin = request.headers.get("origin")
             if request.headers.get("sec-fetch-site", "").lower() == "cross-site" or (
                 origin is not None and not same_origin(request, origin)
             ):
                 return JSONResponse({"detail": "仅允许来自当前网页的请求"}, status_code=403)
-        protected = request.url.path.startswith(("/api/", "/uploads/"))
-        if protected and request.url.path not in {"/api/auth", "/api/login", "/api/logout"} and not authenticated(request):
+        request.state.user = None if external_read else security.user_for_request(request)
+        protected = path.startswith(("/api/", "/uploads/"))
+        public = path in {"/api/auth", "/api/login", "/api/logout"}
+        if protected and not public and not external_read and not authenticated(request):
             return JSONResponse({"detail": "请先登录"}, status_code=401)
-        update_controls = request.url.path in {
+        if protected and not public and not external_read:
+            admin_prefixes = ("/api/settings", "/api/users", "/api/backups", "/api/integrations", "/api/organize")
+            admin_only = any(path == prefix or path.startswith(prefix + "/") for prefix in admin_prefixes)
+            try:
+                if admin_only and not (not security.enabled and request.method == "GET" and path == "/api/settings/updates"):
+                    security.require_admin(request)
+                elif request.method not in {"GET", "HEAD", "OPTIONS"} and path not in {
+                    "/api/search", "/api/ai/chat", "/api/ai/transcribe", "/api/account/password",
+                }:
+                    security.require_write(request)
+            except HTTPException as error:
+                return JSONResponse({"detail": error.detail}, status_code=error.status_code)
+        update_controls = path in {
             "/api/settings/updates", "/api/settings/updates/check", "/api/settings/updates/install",
         }
         if (
             request.method not in {"GET", "HEAD", "OPTIONS"}
-            and request.url.path not in {"/api/login", "/api/logout"}
+            and path not in {"/api/login", "/api/logout"}
             and not update_controls and maintenance_active(updates_path)
         ):
             return JSONResponse({"detail": "系统正在备份或更新，请稍后再修改数据。"}, status_code=503)
-        response = await call_next(request)
+        actor_token = request_actor.set(request.state.user)
+        try:
+            response = await call_next(request)
+        finally:
+            request_actor.reset(actor_token)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "same-origin"
         response.headers["X-Frame-Options"] = "DENY"
@@ -415,30 +469,34 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
             fail("数据库不可用", 503)
         return {"status": "ok"}
 
+    def auth_result(user):
+        result = {"authenticated": user is not None, "auth_required": security.enabled}
+        if user is not None:
+            result["user"] = user
+        return result
+
     @application.get("/api/auth")
     def auth(request: Request):
-        return {"authenticated": authenticated(request), "auth_required": bool(configured_password)}
+        return auth_result(request.state.user)
 
     @application.post("/api/login")
     def login(body: LoginInput, request: Request):
-        if configured_password and not hmac.compare_digest(body.password.encode(), configured_password.encode()):
-            fail("密码不正确", 401)
-        expires = int(time.time()) + SESSION_SECONDS
-        payload = f"{expires}.{secrets.token_hex(16)}"
-        signature = hmac.new(application.state.session_key, payload.encode(), hashlib.sha256).hexdigest()
-        response = JSONResponse({"authenticated": True, "auth_required": bool(configured_password)})
+        user, token = security.login(body.username, body.password, request)
+        response = JSONResponse(auth_result(user))
         browser_origin = canonical_origin(request.headers.get("origin", ""))
         secure_cookie = request.url.scheme == "https" or bool(browser_origin and browser_origin[0] == "https")
-        response.set_cookie(
-            COOKIE_NAME, f"{payload}.{signature}", max_age=SESSION_SECONDS,
-            httponly=True, secure=secure_cookie,
-            samesite="strict", path="/",
-        )
+        if token is not None:
+            response.set_cookie(
+                COOKIE_NAME, token, max_age=SESSION_SECONDS,
+                httponly=True, secure=secure_cookie,
+                samesite="strict", path="/",
+            )
         return response
 
     @application.post("/api/logout")
-    def logout():
-        response = JSONResponse({"authenticated": not bool(configured_password), "auth_required": bool(configured_password)})
+    def logout(request: Request):
+        security.logout(request)
+        response = JSONResponse(auth_result(security.user_for_request(request) if not security.enabled else None))
         response.delete_cookie(COOKIE_NAME, path="/")
         return response
 
@@ -599,7 +657,7 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
         result = []
         for item in items:
             text = " ".join(
-                str(item[key] or "") for key in ("name", "brand", "model", "tags", "notes", "location_path")
+                str(item[key] or "") for key in ("name", "brand", "model", "barcode", "tags", "notes", "location_path")
             ).casefold()
             if all(term in text for term in terms):
                 result.append(item)
@@ -624,10 +682,12 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
         return result
 
     @application.post("/api/search")
-    def search(body: SearchInput, database: Database):
+    def search(body: SearchInput, request: Request, database: Database):
         with transaction(database):
             result = matched(all_items(database), body.query)
-            audit(database, "search", note=body.query)
+            log_id = audit(database, "search", note=body.query)
+            record_search(database, body.query, [row["id"] for row in result],
+                          log_id=log_id, actor=security.current_user(request))
         return {"count": len(result)}
 
     def create_item_data(body: ItemCreate, database, *, audit_note=""):
@@ -783,7 +843,16 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
             rows = database.execute("SELECT * FROM logs ORDER BY id DESC LIMIT ?", (limit,))
         else:
             rows = database.execute("SELECT * FROM logs WHERE item_id=? ORDER BY id DESC LIMIT ?", (item_id, limit))
-        return [dict(row) for row in rows]
+        result = []
+        for row in rows:
+            entry = dict(row)
+            # Legacy rows had no identity information. Keep their old response
+            # shape while exposing actor fields for new authenticated actions.
+            if entry.get("actor_user_id") is None and not entry.get("actor_name"):
+                entry.pop("actor_user_id", None)
+                entry.pop("actor_name", None)
+            result.append(entry)
+        return result
 
     @application.get("/api/dashboard")
     def dashboard(database: Database):
@@ -859,6 +928,17 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
         path = STATIC_DIR / "icon.svg"
         return FileResponse(path, media_type="image/svg+xml") if path.is_file() else Response(status_code=204)
 
+    @application.get("/api/handover", include_in_schema=False)
+    def handover_document():
+        root = Path(__file__).resolve().parent.parent
+        path = root / "HANDOVER.md"
+        if not path.is_file():
+            path = root / "交接文档.md"
+        if not path.is_file():
+            fail("本版交接文档暂不可用", 404)
+        return FileResponse(path, media_type="text/markdown; charset=utf-8",
+                            filename=f"homestorage-handover-{current_version}.md")
+
     @application.get("/", include_in_schema=False)
     def index():
         return FileResponse(STATIC_DIR / "index.html")
@@ -870,7 +950,7 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
             fail("参数格式或取值不正确，请检查填写内容", 422)
 
     def ai_actor(request):
-        if not configured_password:
+        if not security.enabled:
             return None
         token = request.cookies.get(COOKIE_NAME, "")
         return hashlib.sha256(token.encode()).hexdigest() if token else None
@@ -878,7 +958,7 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
     # Keep AI within the same validated and audited data operations as the UI.
     # No database path, filesystem, shell, or configuration operations are tools.
     from .ai import build_ai_router
-    application.include_router(build_ai_router({
+    services = {
         "connect": lambda: connect(application.state.db_path),
         "today": today,
         "list_categories": list_categories,
@@ -888,20 +968,47 @@ def create_app(data_dir: str | Path | None = None, password: str | None = None, 
         ),
         "read_item": lambda database, item_id: item(item_id, database),
         "create_item": lambda database, payload: create_item_data(
-            validated_payload(ItemCreate, payload), database, audit_note="AI 草稿经用户确认录入"
+            validated_payload(ItemCreate, payload), database
         ),
         "item_action": lambda database, item_id, payload: item_action(item_id, validated_payload(ActionInput, payload), database),
         "archive_item": lambda database, item_id, note: change_archive(database, item_id, note),
         "actor": ai_actor,
         "timezone": timezone_name,
         "settings": ai_settings,
-    }))
+        "all_items": all_items,
+        "audit": audit,
+        "now": now,
+        "data_dir": data_path,
+        "current_user": security.current_user,
+        "require_admin": security.require_admin,
+        "require_write": security.require_write,
+        "record_search": record_search,
+        "search_actor": lambda: request_actor.get(),
+        "maintenance_active": lambda: maintenance_active(updates_path),
+    }
+    application.state.services = services
+    application.include_router(build_household_router(security, audit))
+    ai_services = dict(services)
+    ai_services["create_item"] = lambda database, payload: create_item_data(
+        validated_payload(ItemCreate, payload), database, audit_note="AI 草稿经用户确认录入"
+    )
+    application.include_router(build_ai_router(ai_services))
+    application.include_router(build_analytics_router(services))
+    application.include_router(build_transfer_router(services))
+    application.include_router(build_integrations_router(services))
+    organization_manager = OrganizationManager(services)
+    application.state.organization_manager = organization_manager
+    application.include_router(build_organize_router(services, manager=organization_manager))
+    backup_router = build_backup_router(services)
+    backup_manager = backup_router.backup_manager
+    application.state.backup_manager = backup_manager
+    application.include_router(backup_router)
     application.include_router(build_ai_settings_router(
-        ai_settings, password_required=bool(configured_password),
+        ai_settings, password_required=lambda: security.enabled,
     ))
     application.include_router(build_updates_router(
         current_version=current_version, current_revision=current_revision,
-        password_required=bool(configured_password), state_dir=updates_path,
+        password_required=lambda: security.enabled, state_dir=updates_path,
     ))
 
     application.mount("/static", StaticFiles(directory=STATIC_DIR, check_dir=False), name="static")

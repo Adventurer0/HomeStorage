@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-ARG HOMESTORAGE_VERSION=2.5.0
+ARG HOMESTORAGE_VERSION=3.0.0
 ARG HOMESTORAGE_REVISION=local
 LABEL org.opencontainers.image.title="HomeStorage" \
     org.opencontainers.image.source="https://github.com/Adventurer0/HomeStorage" \
@@ -26,7 +26,8 @@ RUN --mount=type=secret,id=pip_ca,required=false \
     && chown 1000:1000 /data
 COPY app ./app
 COPY updater ./updater
-RUN chmod -R a+rX /app/app /app/updater
+COPY 交接文档.md ./HANDOVER.md
+RUN chmod -R a+rX /app/app /app/updater && chmod a+r /app/HANDOVER.md
 
 USER 1000:1000
 EXPOSE 8080

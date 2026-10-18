@@ -55,6 +55,25 @@ CREATE TABLE IF NOT EXISTS items (
     updated_at TEXT NOT NULL,
     archived_at TEXT
 );
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    display_name TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('admin','member','viewer')),
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+    session_version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS household_sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_version INTEGER NOT NULL,
+    expires_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS household_sessions_user ON household_sessions(user_id);
+CREATE INDEX IF NOT EXISTS household_sessions_expiry ON household_sessions(expires_at);
 CREATE TABLE IF NOT EXISTS logs (
     id INTEGER PRIMARY KEY,
     action TEXT NOT NULL,
@@ -89,6 +108,7 @@ def initialize(path: Path) -> None:
             connection.executescript(SCHEMA)
             migrate_location_ids(connection)
             migrate_categories_and_archive(connection)
+            migrate_household_and_barcodes(connection)
             if not connection.execute("SELECT 1 FROM locations LIMIT 1").fetchone():
                 connection.execute(
                     "INSERT INTO locations (name, type) VALUES (?, ?)", ("家", "home")
@@ -130,6 +150,23 @@ def migrate_categories_and_archive(connection: sqlite3.Connection) -> None:
         connection.execute("CREATE INDEX IF NOT EXISTS items_archived ON items(archived_at)")
         if connection.execute("PRAGMA foreign_key_check").fetchone():
             raise RuntimeError("物品数据库迁移失败：已有数据存在无效关联")
+
+
+
+def migrate_household_and_barcodes(connection: sqlite3.Connection) -> None:
+    """Append metadata while retaining all legacy inventory and history rows."""
+    with transaction(connection):
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(items)")}
+        if "barcode" not in columns:
+            connection.execute("ALTER TABLE items ADD COLUMN barcode TEXT NOT NULL DEFAULT ''")
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(logs)")}
+        if "actor_user_id" not in columns:
+            connection.execute("ALTER TABLE logs ADD COLUMN actor_user_id INTEGER REFERENCES users(id) ON DELETE RESTRICT")
+        if "actor_name" not in columns:
+            connection.execute("ALTER TABLE logs ADD COLUMN actor_name TEXT NOT NULL DEFAULT ''")
+        connection.execute("CREATE INDEX IF NOT EXISTS items_barcode ON items(barcode)")
+        connection.execute("CREATE INDEX IF NOT EXISTS logs_actor ON logs(actor_user_id, id DESC)")
+        connection.execute("INSERT OR IGNORE INTO schema_migrations(name) VALUES ('household_barcode_v3')")
 
 
 def migrate_location_ids(connection: sqlite3.Connection) -> None:

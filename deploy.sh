@@ -58,7 +58,7 @@ fi
 docker compose -f docker-compose.yml up -d --build --wait --wait-timeout 120
 echo "HomeStorage 已启动。用手机浏览器打开 http://NAS的局域网IP:端口（默认 8080）。"
 if [ "$created_env" = 1 ]; then
-    echo "已生成随机访问密码并保存到项目目录的 .env；请查看 HOME_STORAGE_PASSWORD 一行登录。"
+    echo "已生成首次管理员初始密码并保存到 .env 的 HOME_STORAGE_PASSWORD；用户名为 admin。已有账号请使用网页中设置的密码。"
 else
-    echo "已保留现有 .env、数据库和照片。访问密码及端口以 .env / 环境变量为准。"
+    echo "已保留现有 .env、数据库和照片。已有账号使用网页中设置的密码；端口以 .env / 环境变量为准。"
 fi

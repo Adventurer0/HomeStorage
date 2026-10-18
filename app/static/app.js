@@ -37,6 +37,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;'
 const number = value => Number(value || 0).toLocaleString('zh-CN');
 const STATUS = {in_stock: '在库', in_use: '使用中', lent: '已借出', depleted: '已用完', discarded: '已丢弃', lost: '已遗失'};
 const ACTION = {create: '登记物品', item_create: '登记物品', update: '编辑档案', item_update: '编辑档案', move: '移动位置', take_out: '取出使用', return: '归还入库', lend: '借出物品', consume: '消耗库存', restock: '补充库存', discard: '丢弃物品', lost: '标记遗失', location_create: '新增位置', location_update: '编辑位置', location_delete: '删除位置', search: '搜索物品', archive: '归档物品', restore: '恢复物品', category_create: '新增分类', category_update: '编辑分类', category_delete: '删除分类'};
+Object.assign(ACTION, {user_create:'新增家庭成员',user_update:'更新家庭账号',user_password_change:'修改账号密码',ai_organize:'AI 分类整理',ai_organize_rollback:'恢复原分类',csv_import:'CSV 批量登记',csv_import_state:'导入档案状态',external_token_create:'创建只读令牌',external_token_revoke:'撤销只读令牌'});
 const LOCATION_TYPES = {home: '家庭', room: '房间', shelf: '货架 / 柜子', drawer: '抽屉', box: '收纳箱', other: '其他'};
 const ROUTES = {dashboard: ['家庭概览', '好好收纳，也好好生活。', 'grid', '概览'], items: ['物品档案', '找得到，用得好。每件物品都有迹可循。', 'box', '物品'], locations: ['收纳空间', '从房间到收纳箱，把家的每个角落串起来。', 'pin', '位置'], expiry: ['到期提醒', '提前看一眼，少一点浪费，多一点安心。', 'clock', '到期'], categories: ['分类管理', '按家里的习惯分类，让每一件物品都好找。', 'tags', '分类'], history: ['操作记录', '每一次取放、移动与补充，都有记录。', 'history', '记录'], settings: ['应用设置', '配置收纳助手，选择程序更新时间。', 'settings', '设置']};
 const state = {route: 'dashboard', locations: [], categories: [], items: [], dashboard: null, logs: [], timezone: 'Asia/Shanghai', appVersion: '', updates: {status: null, preference: null, busy: false, polling: false, generation: 0, sequence: 0, inFlight: false, offline: false, disconnectedSince: null, reauthenticate: false, error: '', savedMessage: '', needsReload: false}, ai: {status: null, messages: [], input: '', generation: 0, busy: false, recording: false, transcribing: false}, filters: {q: '', location_id: '', category: '', category_id: '', status: '', archived: 'false'}, expiry: 'soon', selectedLocation: null, detail: null, authRequired: false, renderToken: 0};
@@ -102,7 +103,11 @@ async function api(path, options = {}) {
   if (response.status === 401) showLogin();
   if (!response.ok) {
     let message = '请求未完成，请稍后重试。';
-    try { const error = await response.json(); if (typeof error.detail === 'string') message = error.detail; } catch (_) { /* Non-JSON server error. */ }
+    try {
+      const error = await response.json();
+      if (typeof error.detail === 'string') message = error.detail;
+      else if (Array.isArray(error.detail)) message = error.detail.map(value=>String(value.msg || '输入内容不符合要求').replace(/^Value error, /,'')).slice(0,3).join('；');
+    } catch (_) { /* Non-JSON server error. */ }
     throw new Error(message);
   }
   return response.status === 204 ? null : response.json();
@@ -189,20 +194,34 @@ function setNavigation() {
   $('page-eyebrow').textContent = state.route === 'dashboard' ? 'YOUR HOME, ORGANIZED' : 'A PLACE FOR EVERYTHING';
   $('export-button').innerHTML = `${icon('download')}<span>导出数据</span>`;
   $('add-item-button').innerHTML = `${icon('plus')}<span>登记物品</span>`;
-  $('add-item-button').hidden = state.route === 'settings';
+  $('add-item-button').hidden = state.route === 'settings' || !HSV3.canWrite();
   $('logout-button').innerHTML = icon('logout');
   $('logout-button').hidden = !state.authRequired;
   $('mobile-logout-button').innerHTML = icon('logout');
   $('mobile-logout-button').hidden = !state.authRequired;
   renderUpdateNotice();
+  HSV3.permissions();
 }
 
 const illustration = `<svg class="storage-illustration" viewBox="0 0 400 240" fill="none" aria-hidden="true"><ellipse cx="217" cy="218" rx="154" ry="9" fill="#aeb9c9" opacity=".23"/><path d="M119 64h216v153H119z" fill="#e9edf3"/><path d="M113 62h228v8H113zM113 130h228v7H113zM113 208h228v9H113z" fill="#8190a5"/><path d="M121 70h7v138h-7zm204 0h7v138h-7z" fill="#96a3b6"/><rect x="142" y="89" width="71" height="40" rx="4" fill="#d8dce4"/><path d="M138 87h79v8h-79z" fill="#e8ebf0"/><rect x="164" y="101" width="24" height="11" rx="2" fill="#fbfcfe"/><path d="M171 106h10" stroke="#9ba7b9" stroke-width="2"/><rect x="230" y="96" width="72" height="33" rx="4" fill="#bdd5ee"/><path d="M226 94h80v7h-80z" fill="#d5e5f7"/><rect x="253" y="107" width="25" height="10" rx="2" fill="#f7fbff"/><path d="M261 112h10" stroke="#8caed3" stroke-width="2"/><rect x="143" y="157" width="73" height="50" rx="4" fill="#b9c8dd"/><path d="M138 154h83v8h-83z" fill="#d5deeb"/><path d="M168 174h23v10h-23z" fill="#f3f7fc"/><rect x="233" y="163" width="67" height="44" rx="4" fill="#c4d8ef"/><path d="M229 159h76v8h-76z" fill="#dceafa"/><rect x="256" y="178" width="21" height="10" rx="2" fill="#f8fbff"/><path d="M87 177c-15-21-22-42-7-53 1 19 14 25 11 48 8-25 9-44 28-44 4 18-11 29-21 48" fill="#849eb4"/><path d="M91 179v20" stroke="#718ca4" stroke-width="3"/><path d="M70 192h41l-6 25H76z" fill="#cbd3de"/><path d="m278 53 10-10 10 10" stroke="#9ab7d7" stroke-width="2"/><circle cx="77" cy="70" r="6" fill="#b2d2f4"/><path d="m356 152 5-5 5 5-5 5-5-5Z" fill="#b6cde8"/><path d="M188 43v-7m-3 3h6" stroke="#a5bdd9" stroke-width="2"/></svg>`;
+function readableLog(log) {
+  let title = log.item_name || (log.action === 'search' ? '物品查询' : log.action.startsWith('category_') ? '分类管理' : log.action.startsWith('location_') ? '收纳位置' : log.action.startsWith('user_') ? '家庭账号' : log.action.startsWith('external_token_') ? '外部 AI 连接' : log.action.startsWith('csv_') ? '批量登记' : '家庭档案');
+  let note = log.note || '';
+  let metadata = {};
+  if (['user_create','user_update','user_password_change','csv_import_state'].includes(log.action)) { try { metadata = JSON.parse(note); } catch (_) { /* Older records may have no structured note. */ } note = ''; }
+  if (log.action === 'user_create') { title = metadata.username || title; note = `已添加${({admin:'管理员',member:'家庭成员',viewer:'只读成员'})[metadata.role] || '家庭账号'}`; }
+  else if (log.action === 'user_update') { const labels = {display_name:'显示名称',role:'账号权限',active:'登录状态',password:'密码'}; const changed = (metadata.fields || []).map(key=>labels[key]).filter(Boolean); note = changed.length ? `已更新${changed.join('、')}` : '账号资料已更新'; }
+  else if (log.action === 'user_password_change') note = '密码已修改，原来的登录会话已失效';
+  else if (log.action === 'csv_import_state') note = [STATUS[metadata.status] ? `导入时状态：${STATUS[metadata.status]}` : '',metadata.archived_at ? '已归档' : ''].filter(Boolean).join(' · ');
+  else if (['ai_organize','ai_organize_rollback'].includes(log.action)) note = note.replace(/；批次 [A-Za-z0-9_-]+；/,'；');
+  return {title,note};
+}
 function logRow(log, compact = false) {
+  const readable = readableLog(log);
   const quantity = log.quantity_delta ? `<span class="log-quantity">${log.quantity_delta > 0 ? '+' : ''}${number(log.quantity_delta)}</span>` : '';
   const transition = log.from_location && log.to_location && log.from_location !== log.to_location ? `${log.from_location} → ${log.to_location}` : log.to_location || log.from_location || '';
-  const details = [transition, log.note].filter(Boolean).join(' · ');
-  return `<div class="${compact ? 'list-row' : 'log-row'}"><div class="list-icon">${icon(log.action.startsWith('location_') ? 'pin' : log.action === 'search' ? 'search' : 'box')}</div><div class="list-content"><div class="list-title">${log.item_id ? `<button class="text-link" data-action="detail" data-id="${log.item_id}">${esc(log.item_name || '物品')}</button>` : `<span>${esc(log.item_name || (log.action === 'search' ? '物品查询' : '收纳位置'))}</span>`}<span class="log-action">${esc(ACTION[log.action] || log.action)}</span>${quantity}</div>${details ? `<p class="list-subtitle">${esc(details)}</p>` : ''}</div><time class="log-time" datetime="${esc(log.created_at)}">${date(log.created_at, true)}</time></div>`;
+  const details = [transition, readable.note, log.actor_name ? `操作人：${log.actor_name}` : ''].filter(Boolean).join(' · ');
+  return `<div class="${compact ? 'list-row' : 'log-row'}"><div class="list-icon">${icon(log.action.startsWith('location_') ? 'pin' : log.action.startsWith('user_') || log.action.startsWith('external_token_') ? 'shield' : log.action === 'search' ? 'search' : 'box')}</div><div class="list-content"><div class="list-title">${log.item_id ? `<button class="text-link" data-action="detail" data-id="${log.item_id}">${esc(readable.title)}</button>` : `<span>${esc(readable.title)}</span>`}<span class="log-action">${esc(ACTION[log.action] || '操作记录')}</span>${quantity}</div>${details ? `<p class="list-subtitle">${esc(details)}</p>` : ''}</div><time class="log-time" datetime="${esc(log.created_at)}">${date(log.created_at, true)}</time></div>`;
 }
 function expiryRow(item) { return `<button class="list-row expiry-row" data-action="detail" data-id="${item.id}"><span class="list-icon ${item.expiry_status === 'expired' ? 'expiry-expired' : 'expiry-soon'}">${icon('clock')}</span><span class="list-content"><span class="list-title">${esc(item.name)}</span><span class="list-subtitle">${esc(item.location_path)}</span></span><span class="list-end">${expiryBadge(item)}<span class="expiry-date">${date(item.expires_on)}</span></span></button>`; }
 function renderDashboard(data) {
@@ -523,7 +542,9 @@ function clearUpdateProxy() {
 
 function renderSettings() {
   if (state.route !== 'settings' || $('app-shell').hidden) return;
-  if (!$('settings-update-panels')) $('page-view').innerHTML = '<div class="settings-layout"><div id="ai-settings-mount"></div><div id="settings-update-panels"></div><div id="update-proxy-mount"></div></div>';
+  if (!HSV3.isAdmin()) { HSV3.settings(); return; }
+  if (!$('settings-update-panels')) $('page-view').innerHTML = '<div class="settings-layout"><div id="v3-settings-mount"></div><div id="ai-settings-mount"></div><div id="settings-update-panels"></div><div id="update-proxy-mount"></div></div>';
+  HSV3.settings();
   renderAISettings();
   const updates = state.updates;
   const status = updates.status;
@@ -588,10 +609,11 @@ function handleUpdateError(error) {
 }
 function scheduleUpdatePoll() {
   clearTimeout(updatePollTimer); updatePollTimer = null;
-  if ($('app-shell').hidden || (state.route !== 'settings' && !updateRunning() && !state.updates.status?.auto_update)) return;
+  if (!HSV3.isAdmin() || $('app-shell').hidden || (state.route !== 'settings' && !updateRunning() && !state.updates.status?.auto_update)) return;
   updatePollTimer = setTimeout(async () => { await loadUpdateStatus(); renderSettings(); }, updateBusy() || state.updates.offline ? 5000 : state.route === 'settings' ? 30000 : 60000);
 }
 async function loadUpdateStatus() {
+  if (!HSV3.isAdmin()) return;
   const updates = state.updates;
   if (updates.polling || updates.busy) { scheduleUpdatePoll(); return; }
   const generation = updates.generation;
@@ -654,6 +676,7 @@ async function installUpdate(form) {
   } finally { if (generation === updates.generation) { updates.busy = false; button.disabled = false; renderSettings(); scheduleUpdatePoll(); } }
 }
 async function refreshPage(showLoading = true) {
+  HSV3.pageChanging();
   if (state.route !== 'settings' && updateProxyPanel) clearUpdateProxy();
   const token = ++state.renderToken;
   cancelMotion($('page-view'));
@@ -668,11 +691,12 @@ async function refreshPage(showLoading = true) {
     else if (state.route === 'locations') { state.locations = await api('/api/locations'); if (token !== state.renderToken) return; renderLocations(); }
     else if (state.route === 'categories') { state.categories = await api('/api/categories'); if (token !== state.renderToken) return; renderCategories(); }
     else if (state.route === 'history') { const logs = await api('/api/logs?limit=200'); if (token !== state.renderToken) return; renderHistory(logs); }
-    else if (state.route === 'settings') { renderSettings(); await Promise.all([loadUpdateStatus(), loadAISettings(token)]); if (token !== state.renderToken) return; renderSettings(); }
+    else if (state.route === 'settings') { renderSettings(); await Promise.all(HSV3.isAdmin() ? [loadUpdateStatus(), loadAISettings(token)] : []); if (token !== state.renderToken) return; renderSettings(); }
   } catch (error) { if (token !== state.renderToken) return; showError(error); $('page-view').innerHTML = empty('暂时无法读取数据', '请检查 NAS 服务是否运行，稍后重新连接。', 'retry', '重新连接', 'refresh'); }
   finally {
     if (token === state.renderToken) {
       $('page-view').setAttribute('aria-busy', 'false');
+      HSV3.afterPage();
       if (showLoading && !$('app-shell').hidden && !$('page-view').contains(document.activeElement)) enterCollection($('page-view').children);
     }
   }
@@ -689,6 +713,7 @@ function openModal(id, content) {
   dialog.scrollTop = 0;
   dialog.querySelector('.modal-title')?.focus({preventScroll: true});
   if (opening) enterMotion(dialog, {modal: true});
+  HSV3.permissions(dialog);
   return dialog;
 }
 function field(label, name, value = '', type = 'text', extra = '', wide = false) { return `<label class="form-field${wide ? ' span-2' : ''}"><span class="field-label">${esc(label)}</span><input class="form-control" name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`; }
@@ -699,14 +724,14 @@ async function openItemForm(id = null) {
     const item = id ? await api(`/api/items/${id}`) : {quantity: 1, unit: '件', warning_days: 7, category_id: state.categories.find(cat => cat.active && cat.name === '其他')?.id || state.categories.find(cat => cat.active)?.id || '', stored_date: today(), location_id: state.filters.location_id || state.selectedLocation || state.locations[0]?.id || ''};
     const photo = imageUrl(item.image_url);
     releaseItemPhotoPreview();
-    openModal('item-modal', `<form id="item-form" data-id="${id || ''}" data-image="${esc(item.image_url || '')}">${modalHeader(id ? '编辑物品档案' : '登记一件物品', 'item-modal-title', id ? '库存和位置变化请在物品详情中操作，会自动留痕。' : '拍张照、选个位置，让物品有迹可循。')}<div class="modal-body"><div class="image-upload"><div class="image-preview" id="image-preview">${itemVisual(item)}</div><div><label class="button secondary button-small" for="item-photo">${icon('image')} ${photo ? '更换照片' : '添加照片'}</label><input id="item-photo" type="file" name="photo" accept="image/jpeg,image/png,image/webp" class="screen-reader"><p class="help-text">JPG、PNG 或 WebP，最大 10 MB</p><p class="help-text image-auto-hint">没有照片？会按名称和分类自动搭配图标。</p><button type="button" class="text-link" data-action="remove-photo"${photo ? '' : ' hidden'}>移除照片</button></div></div><div class="form-grid">${field('物品名称 *', 'name', item.name, 'text', 'required maxlength="200" placeholder="例如：便携电动打气筒"', true)}<label class="form-field"><span class="field-label">物品分类 *</span><select class="form-control" name="category_id" required>${option('', '请选择分类', item.category_id)}${categoryOptions(item.category_id)}</select><span class="help-text">在“分类管理”中自定义分类。</span></label>${id ? `<div class="form-field"><span class="field-label">当前收纳位置</span><div class="form-control static-field">${esc(item.location_path)}</div></div>` : `<label class="form-field"><span class="field-label">收纳位置 *</span><select name="location_id" class="form-control" required>${locationOptions(item.location_id)}</select></label>`}${id ? `<div class="form-field"><span class="field-label">当前库存</span><div class="form-control static-field">${number(item.quantity)} ${esc(item.unit)} · ${esc(STATUS[item.status])}</div></div>` : field('数量 *', 'quantity', item.quantity, 'number', 'required min="0" max="1000000000" step="1"')}${field('计量单位', 'unit', item.unit, 'text', 'required maxlength="30" placeholder="件、包、瓶…"')}${field('品牌', 'brand', item.brand, 'text', 'maxlength="120"')}${field('型号 / 规格', 'model', item.model, 'text', 'maxlength="120"')}${field('入库日期 *', 'stored_date', item.stored_date, 'date', 'required')}${field('购买日期', 'purchase_date', item.purchase_date, 'date')}${field('购买价格（元）', 'purchase_price', item.purchase_price ?? '', 'number', 'min="0" step="0.01"')}${field('有效期至', 'expires_on', item.expires_on, 'date')}${field('提前提醒（天）', 'warning_days', item.warning_days, 'number', 'required min="0" max="3650" step="1"')}${field('标签', 'tags', item.tags, 'text', 'maxlength="500" placeholder="用逗号分隔，例如：露营,常用"')}<label class="form-field span-2"><span class="field-label">备注</span><textarea class="form-control" name="notes" rows="3" maxlength="4000" placeholder="配件、注意事项，或你想记住的小细节…">${esc(item.notes)}</textarea></label></div><p class="error-banner form-error" hidden role="alert"></p></div><div class="modal-footer"><button type="button" class="button secondary" data-action="close-modal">取消</button><button type="submit" class="button primary">${icon('check')} ${id ? '保存档案' : '登记物品'}</button></div></form>`);
+    openModal('item-modal', `<form id="item-form" data-id="${id || ''}" data-image="${esc(item.image_url || '')}">${modalHeader(id ? '编辑物品档案' : '登记一件物品', 'item-modal-title', id ? '库存和位置变化请在物品详情中操作，会自动留痕。' : '拍张照、选个位置，让物品有迹可循。')}<div class="modal-body"><div class="image-upload"><div class="image-preview" id="image-preview">${itemVisual(item)}</div><div><label class="button secondary button-small" for="item-photo">${icon('image')} ${photo ? '更换照片' : '添加照片'}</label><input id="item-photo" type="file" name="photo" accept="image/jpeg,image/png,image/webp" class="screen-reader"><p class="help-text">JPG、PNG 或 WebP，最大 10 MB</p><p class="help-text image-auto-hint">没有照片？会按名称和分类自动搭配图标。</p><button type="button" class="text-link" data-action="remove-photo"${photo ? '' : ' hidden'}>移除照片</button></div></div><div class="form-grid">${field('物品名称 *', 'name', item.name, 'text', 'required maxlength="200" placeholder="例如：便携电动打气筒"', true)}<label class="form-field"><span class="field-label">物品分类 *</span><select class="form-control" name="category_id" required>${option('', '请选择分类', item.category_id)}${categoryOptions(item.category_id)}</select><span class="help-text">在“分类管理”中自定义分类。</span></label>${id ? `<div class="form-field"><span class="field-label">当前收纳位置</span><div class="form-control static-field">${esc(item.location_path)}</div></div>` : `<label class="form-field"><span class="field-label">收纳位置 *</span><select name="location_id" class="form-control" required>${locationOptions(item.location_id)}</select></label>`}${id ? `<div class="form-field"><span class="field-label">当前库存</span><div class="form-control static-field">${number(item.quantity)} ${esc(item.unit)} · ${esc(STATUS[item.status])}</div></div>` : field('数量 *', 'quantity', item.quantity, 'number', 'required min="0" max="1000000000" step="1"')}${field('计量单位', 'unit', item.unit, 'text', 'required maxlength="30" placeholder="件、包、瓶…"')}${field('条码（可选）', 'barcode', item.barcode || '', 'text', 'maxlength="200" placeholder="商品条码或自定义编码"')}${field('品牌', 'brand', item.brand, 'text', 'maxlength="120"')}${field('型号 / 规格', 'model', item.model, 'text', 'maxlength="120"')}${field('入库日期 *', 'stored_date', item.stored_date, 'date', 'required')}${field('购买日期', 'purchase_date', item.purchase_date, 'date')}${field('购买价格（元）', 'purchase_price', item.purchase_price ?? '', 'number', 'min="0" step="0.01"')}${field('有效期至', 'expires_on', item.expires_on, 'date')}${field('提前提醒（天）', 'warning_days', item.warning_days, 'number', 'required min="0" max="3650" step="1"')}${field('标签', 'tags', item.tags, 'text', 'maxlength="500" placeholder="用逗号分隔，例如：露营,常用"')}<label class="form-field span-2"><span class="field-label">备注</span><textarea class="form-control" name="notes" rows="3" maxlength="4000" placeholder="配件、注意事项，或你想记住的小细节…">${esc(item.notes)}</textarea></label></div><p class="error-banner form-error" hidden role="alert"></p></div><div class="modal-footer"><button type="button" class="button secondary" data-action="close-modal">取消</button><button type="submit" class="button primary">${icon('check')} ${id ? '保存档案' : '登记物品'}</button></div></form>`);
     refreshItemIcon($('item-form'));
   } catch (error) { toast(error.message, true); }
 }
 async function submitItem(form) {
   const data = new FormData(form);
   const payload = {};
-  ['name', 'unit', 'brand', 'model', 'tags', 'notes', 'stored_date'].forEach(key => payload[key] = String(data.get(key) || '').trim());
+  ['name', 'unit', 'brand', 'model', 'tags', 'notes', 'stored_date', 'barcode'].forEach(key => payload[key] = String(data.get(key) || '').trim());
   ['purchase_date', 'expires_on'].forEach(key => payload[key] = data.get(key) || null);
   payload.purchase_price = data.get('purchase_price') === '' ? null : Number(data.get('purchase_price'));
   payload.category_id = Number(data.get('category_id'));
@@ -733,7 +758,7 @@ async function openDetail(id) {
     const [item, logs] = await Promise.all([api(`/api/items/${id}`), api(`/api/logs?item_id=${id}&limit=50`)]);
     state.detail = item;
     const actions = archived(item) ? [] : {in_stock: ['take_out', 'move', 'lend', 'consume', 'restock', 'discard', 'lost'], in_use: ['return', 'lend', 'discard', 'lost'], lent: ['return', 'discard', 'lost'], depleted: ['restock'], discarded: [], lost: []}[item.status] || [];
-    openModal('detail-modal', `${modalHeader('物品详情', 'detail-modal-title')}<div class="modal-body"><div class="detail-hero"><div class="detail-image">${itemVisual(item)}</div><div class="detail-info"><span class="eyebrow">${esc(item.category)}</span><h3 class="detail-title">${esc(item.name)}</h3><div class="detail-badges">${badge(item.status)}${archiveBadge(item)}${expiryBadge(item)}</div><p class="item-path">${icon('pin')}${esc(item.location_path)}</p><div class="detail-quantity"><strong>${number(item.quantity)}</strong> ${esc(item.unit)}</div></div></div><div class="detail-grid">${datum('品牌 / 型号', [item.brand, item.model].filter(Boolean).join(' / '))}${datum('入库日期', date(item.stored_date))}${datum('购买日期', date(item.purchase_date))}${datum('购买价格', item.purchase_price == null ? '' : `¥ ${number(item.purchase_price)}`)}${datum('有效期至', date(item.expires_on))}${datum('提前提醒', `${item.warning_days} 天`)}${datum('标签', item.tags)}${datum('档案更新', date(item.updated_at, true))}${archived(item) ? datum('归档时间', date(item.archived_at, true)) : ''}</div>${item.notes ? `<div class="detail-notes"><span class="detail-label">备注</span><p>${esc(item.notes)}</p></div>` : ''}${actions.length ? `<h3 class="section-title">物品操作</h3><div class="action-grid">${actions.map(action => `<button class="button ${['discard', 'lost'].includes(action) ? 'subtle action-muted' : 'secondary'}" data-action="item-action" data-value="${action}" data-id="${item.id}">${icon(action === 'move' ? 'pin' : action === 'discard' ? 'trash' : action === 'restock' ? 'plus' : action === 'lost' ? 'alert' : 'refresh')}${esc(ACTION[action])}</button>`).join('')}</div><p class="help-text">取出、归还与借出会更新整件物品的状态；数量变化请使用消耗或补充。</p>` : `<p class="help-text">${archived(item) ? '物品已归档，保留库存、位置和历史。恢复后可继续取放。' : '当前状态没有可用的库存操作。档案和历史仍然保留。'}</p>`}<h3 class="section-title">操作记录</h3><div class="detail-logs">${logs.length ? logs.map(log => logRow(log, true)).join('') : '<p class="muted">暂无记录</p>'}</div></div><div class="modal-footer"><button class="button secondary" data-action="close-modal">关闭</button><button class="button secondary" data-action="${archived(item) ? 'restore-item' : 'archive-item'}" data-id="${item.id}">${icon(archived(item) ? 'refresh' : 'package')} ${archived(item) ? '恢复物品' : '归档物品'}</button><button class="button primary" data-action="edit-item" data-id="${item.id}">${icon('edit')} 编辑档案</button></div>`);
+    openModal('detail-modal', `${modalHeader('物品详情', 'detail-modal-title')}<div class="modal-body"><div class="detail-hero"><div class="detail-image">${itemVisual(item)}</div><div class="detail-info"><span class="eyebrow">${esc(item.category)}</span><h3 class="detail-title">${esc(item.name)}</h3><div class="detail-badges">${badge(item.status)}${archiveBadge(item)}${expiryBadge(item)}</div><p class="item-path">${icon('pin')}${esc(item.location_path)}</p><div class="detail-quantity"><strong>${number(item.quantity)}</strong> ${esc(item.unit)}</div></div></div><div class="detail-grid">${datum('物品条码', item.barcode)}${datum('品牌 / 型号', [item.brand, item.model].filter(Boolean).join(' / '))}${datum('入库日期', date(item.stored_date))}${datum('购买日期', date(item.purchase_date))}${datum('购买价格', item.purchase_price == null ? '' : `¥ ${number(item.purchase_price)}`)}${datum('有效期至', date(item.expires_on))}${datum('提前提醒', `${item.warning_days} 天`)}${datum('标签', item.tags)}${datum('档案更新', date(item.updated_at, true))}${archived(item) ? datum('归档时间', date(item.archived_at, true)) : ''}</div>${item.notes ? `<div class="detail-notes"><span class="detail-label">备注</span><p>${esc(item.notes)}</p></div>` : ''}${actions.length ? `<h3 class="section-title">物品操作</h3><div class="action-grid">${actions.map(action => `<button class="button ${['discard', 'lost'].includes(action) ? 'subtle action-muted' : 'secondary'}" data-action="item-action" data-value="${action}" data-id="${item.id}">${icon(action === 'move' ? 'pin' : action === 'discard' ? 'trash' : action === 'restock' ? 'plus' : action === 'lost' ? 'alert' : 'refresh')}${esc(ACTION[action])}</button>`).join('')}</div><p class="help-text">取出、归还与借出会更新整件物品的状态；数量变化请使用消耗或补充。</p>` : `<p class="help-text">${archived(item) ? '物品已归档，保留库存、位置和历史。恢复后可继续取放。' : '当前状态没有可用的库存操作。档案和历史仍然保留。'}</p>`}<h3 class="section-title">操作记录</h3><div class="detail-logs">${logs.length ? logs.map(log => logRow(log, true)).join('') : '<p class="muted">暂无记录</p>'}</div></div><div class="modal-footer"><button class="button secondary" data-action="close-modal">关闭</button><button class="button secondary" data-v3="item-qr" data-id="${item.id}">${icon('qr')} 物品二维码</button><button class="button secondary" data-action="${archived(item) ? 'restore-item' : 'archive-item'}" data-id="${item.id}">${icon(archived(item) ? 'refresh' : 'package')} ${archived(item) ? '恢复物品' : '归档物品'}</button><button class="button primary" data-action="edit-item" data-id="${item.id}">${icon('edit')} 编辑档案</button></div>`);
   } catch (error) { toast(error.message, true); }
 }
 async function openAction(id, action) {
@@ -841,6 +866,7 @@ function renderAI(focus = false) {
   const previousCount = $('ai-messages')?.querySelectorAll('.ai-message').length || 0;
   cancelMotion($('ai-panel'));
   $('ai-panel').outerHTML = aiPanel();
+  HSV3.permissions($('ai-panel'));
   const messages = $('ai-messages'); if (messages) messages.scrollTop = focus ? messages.scrollHeight : previousScroll;
   if (messages) enterCollection([...messages.querySelectorAll('.ai-message')].slice(previousCount), true);
   if (focus && !state.ai.busy && !state.ai.recording && !state.ai.transcribing) $('ai-message')?.focus({preventScroll: true});
@@ -929,10 +955,10 @@ async function toggleRecording() {
   } catch (error) { stream?.getTracks().forEach(track => track.stop()); state.ai.recording = false; toast(error.name === 'NotAllowedError' ? '麦克风权限未开启。请允许录音，或使用手机键盘语音输入。' : '无法开始录音，请检查麦克风或使用手机键盘语音输入。', true); renderAI(); }
 }
 
-function showLogin() { clearAISettings(); clearUpdateProxy(); clearTimeout(updatePollTimer); updatePollTimer = null; state.updates.generation++; state.updates.status = null; state.updates.preference = null; state.updates.polling = false; state.updates.busy = false; state.updates.inFlight = false; state.updates.offline = false; state.updates.error = ''; state.updates.savedMessage = ''; state.updates.needsReload = false; state.updates.reauthenticate = false; state.updates.disconnectedSince = null; $('update-notice').hidden = true; stopRecording(true); state.ai.generation++; state.ai.busy = false; state.ai.transcribing = false; state.ai.messages = []; state.ai.input = ''; document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close()); $('app-shell').hidden = true; $('login-view').hidden = false; document.querySelector('#login-form input').focus(); }
+function showLogin() { HSV3.clear(); state.user = null; clearAISettings(); clearUpdateProxy(); clearTimeout(updatePollTimer); updatePollTimer = null; state.updates.generation++; state.updates.status = null; state.updates.preference = null; state.updates.polling = false; state.updates.busy = false; state.updates.inFlight = false; state.updates.offline = false; state.updates.error = ''; state.updates.savedMessage = ''; state.updates.needsReload = false; state.updates.reauthenticate = false; state.updates.disconnectedSince = null; $('update-notice').hidden = true; stopRecording(true); state.ai.generation++; state.ai.busy = false; state.ai.transcribing = false; state.ai.messages = []; state.ai.input = ''; document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close()); $('app-shell').hidden = true; $('login-view').hidden = false; document.querySelector('#login-form input').focus(); }
 async function bootstrap() {
   try {
-    const auth = await api('/api/auth'); state.authRequired = auth.auth_required;
+    const auth = await api('/api/auth'); state.authRequired = auth.auth_required; state.user = auth.user || null;
     if (!auth.authenticated) { showLogin(); return; }
     $('app-shell').hidden = false; $('login-view').hidden = true;
     const [meta, locations, categories, aiStatus] = await Promise.all([api('/api/meta'), api('/api/locations'), api('/api/categories'), api('/api/ai/status').catch(() => ({enabled: false, voice_enabled: false}))]);
@@ -942,12 +968,14 @@ async function bootstrap() {
     else state.route = ROUTES[location.hash.slice(1)] ? location.hash.slice(1) : 'dashboard';
     await refreshPage();
     if (state.route !== 'settings') await loadUpdateStatus();
+    await HSV3.deepLink();
   } catch (error) { showError(error); setNavigation(); $('page-view').innerHTML = empty('暂时无法连接家庭档案', '请检查服务是否启动，再重新连接。', 'retry', '重新连接', 'refresh'); }
 }
 window.addEventListener('hashchange', () => { if (state.ai.recording) stopRecording(true); state.route = ROUTES[location.hash.slice(1)] ? location.hash.slice(1) : 'dashboard'; if ($('app-shell').hidden) return; window.scrollTo({top: 0, left: 0, behavior: 'instant'}); $('main-content').focus({preventScroll: true}); refreshPage(); scheduleUpdatePoll(); });
 document.addEventListener('click', async event => {
   const target = event.target.closest('[data-action]'); if (!target || target.disabled) return;
   const action = target.dataset.action; const id = Number(target.dataset.id);
+  if (!HSV3.allowedAction(action)) { toast('当前账号没有此操作权限。', true); return; }
   if (action === 'focus-main') { ($('app-shell').hidden ? document.querySelector('#login-form input') : $('main-content')).focus(); return; }
   if (action === 'browse-items' || action === 'stat-filter') {
     const value = target.dataset.value || 'all';
@@ -994,7 +1022,7 @@ document.addEventListener('click', async event => {
   if (action === 'edit-location') { openLocationForm(id); return; }
   if (action === 'delete-location') { confirmDeleteLocation(id); return; }
   if (action === 'select-location') { state.selectedLocation = id; renderLocations(); document.querySelector(`.location-row[data-id="${id}"]`)?.focus({preventScroll: true}); return; }
-  if (action === 'view-location-items') { state.filters = {q: '', category: '', category_id: '', status: '', location_id: String(id), archived: 'false'}; navigate('items'); return; }
+  if (action === 'view-location-items') { target.closest('dialog')?.close(); state.filters = {q: '', category: '', category_id: '', status: '', location_id: String(id), archived: 'false'}; navigate('items'); return; }
   if (action === 'qr') { openQr(id); return; }
   if (action === 'print-qr') { window.print(); return; }
   if (action === 'expiry-tab') { state.expiry = target.dataset.value; await refreshPage(); if (state.route === 'expiry') $(`expiry-tab-${state.expiry}`)?.focus({preventScroll: true}); return; }
@@ -1060,6 +1088,7 @@ document.addEventListener('change', event => {
 document.addEventListener('submit', async event => {
   const form = event.target; if (!(form instanceof HTMLFormElement)) return;
   event.preventDefault();
+  if (!HSV3.allowedForm(form.id)) { toast('当前账号没有此操作权限。', true); return; }
   if (form.id === 'ai-form') { await submitAI(form); return; }
   if (form.id === 'ai-settings-form') { await saveAISettings(form); return; }
   if (form.id === 'update-preference-form') { await saveUpdatePreference(); return; }
@@ -1074,7 +1103,7 @@ document.addEventListener('submit', async event => {
   const button = form.querySelector('[type="submit"]'); const errorElement = form.querySelector('.form-error') || $('login-error');
   form.dataset.saving = 'true'; if (button) button.disabled = true; if (errorElement) errorElement.hidden = true;
   try {
-    if (form.id === 'login-form') { await post('/api/login', {password: new FormData(form).get('password')}); form.reset(); await bootstrap(); }
+    if (form.id === 'login-form') { await post('/api/login', {username: new FormData(form).get('username') || 'admin', password: new FormData(form).get('password')}); form.reset(); await bootstrap(); }
     else if (form.id === 'category-form') await submitCategory(form);
     else if (form.id === 'archive-form') await submitArchive(form);
     else if (form.id === 'delete-category-form') { await api(`/api/categories/${form.dataset.id}`, {method: 'DELETE'}); $('category-modal').close(); toast('分类已删除。'); await refreshAfterMutation(); }

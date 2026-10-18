@@ -233,11 +233,12 @@ def build_updates_router(*, current_version: str, current_revision: str, passwor
 
     async def proxy(method, route, payload=None, *, optional=False):
         message = DEPLOYMENT_MESSAGE if not raw_service_url else SERVICE_MESSAGE
-        if not password_required:
+        enabled = password_required() if callable(password_required) else password_required
+        if not enabled:
             message = "请先在 NAS Compose 中设置 HOME_STORAGE_PASSWORD 登录密码，再启用网页更新。"
             if not optional:
                 raise HTTPException(403, message)
-        token = read_token(state_dir) if service_url and password_required else None
+        token = read_token(state_dir) if service_url and enabled else None
         if not token:
             if optional:
                 return unavailable_status(current_version, current_revision, message)

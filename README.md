@@ -6,6 +6,8 @@
 
 接手开发或维护部署，请阅读 [交接文档](交接文档.md)，其中整理了项目结构、数据备份、AI 权限、更新发布和 NAS 排障步骤。
 
+**当前版本：3.0.0。** 新增功能及操作步骤见 [3.0 功能说明](FEATURES_V3.md)。
+
 功能包含：
 
 - **存储地图**：家 → 房间 → 货架 → 层板 / 抽屉 → 箱子，可自定义层级。
@@ -19,10 +21,17 @@
 - **存取和移库**：取出、归还、借出、移库、补充、消耗、丢弃、丢失；变动与日志一起保存。
 - **保质期**：每件物品设置到期日和提前提醒天数，安全绿色、临期黄色、过期红色；首页和临期页自动汇总。
 - **操作记录**：查看全屋操作、单件物品历史和搜索记录。
-- **数据导出**：导出 JSON 档案；完整备份包含数据库与照片。
+- **家庭账号**：管理员、成员、只读账号共用库存，管理员在网页管理用户。
+- **扫码存取**：条码、物品二维码和位置二维码；相机、扫码枪或手动输入，确认后入库、出库、取出或归还。
+- **CSV 导入导出**：下载模板，预览后批量新增；支持 Excel 友好的 UTF-8 BOM 与公式文字转义。
+- **本地与网盘备份**：网页生成和下载含数据库及照片的 ZIP，支持定时通过 OpenList/AList WebDAV 上传夸克等网盘。
+- **活动热力图**：查看最近 90 天物品调动、搜索次数与热门搜索物品。
+- **外部 AI 只读接口**：网页创建、复制和撤销 API 令牌，提供 OpenAPI 描述，只允许读取库存。
 - **自定义分类**：新增、重命名、排序和停用分类，已有物品使用稳定分类 ID。
 - **归档与恢复**：保留物品数量、照片、位置和日志，将归档物品从日常库存及提醒中隐藏。
 - **AI 收纳助手**：在首页通过文字或录音查找物品、生成录入、补充、移库和归档草稿；用户明确确认后才执行数据写入。
+- **AI 分类整理**：管理员同意后分批生成全库分类方案，预览并再次确认才应用，保存前后快照以便检查和回档。
+- **版本交接**：在设置查看、下载本版本采用的模型、技术、验证与升级说明。
 - **网页更新设置**：检查新版本、确认立即更新，或自主开启每天定时自动更新；更新前备份，失败时恢复。
 - **更新下载代理**：在网页填写更新专用 HTTP / SOCKS5 代理及可选认证，帮助 NAS 通过可访问的代理连接 GitHub。
 
@@ -50,7 +59,7 @@ AI 功能可选。登录网页，进入 **设置 → AI 与语音**，填写 API
 
 首页可问“扭力扳手在哪里”，或说“新增两条 USB-C 线，放在书房配件箱”。AI 查询真实库存；位置不明确时需要补充信息。新增、补充、移动和归档都显示待确认卡片，用户点击确认后才能写入。草稿15分钟过期；库存或目标位置发生变化时需要重新生成。取消、重复确认不会产生重复库存。归档保留原始状态和数量，恢复后可继续使用。
 
-AI 只获得列举分类、位置、查询物品与提出数据操作草稿的工具。没有 SQL、文件、终端、代码、Docker 或 GitHub 操作工具。用户确认由后端校验，模型不能自行确认。API 调用会将当前聊天和查询所需的少量物品信息发送给配置的服务商；不自动发送全库和照片。聊天模型返回的文字只作为建议展示，保存结果以待确认卡片和系统日志为准。
+AI 只获得列举分类、位置、查询物品与提出数据操作草稿的工具。没有 SQL、文件、终端、代码、Docker 或 GitHub 操作工具。用户确认由后端校验，模型不能自行确认。首页聊天 API 调用会将当前聊天和查询所需的少量物品信息发送给配置的服务商；不自动发送全库和照片。管理员主动开启的 AI 分类整理会在同意后分批发送待整理物品描述，详见 [3.0 功能说明](FEATURES_V3.md#ai-全库分类整理与回档)。聊天模型返回的文字只作为建议展示，保存结果以待确认卡片和系统日志为准。
 
 手机网页录音通常需要 **HTTPS**。通过飞牛 HTTPS 反向代理访问后允许麦克风，录音转成文字后可以先修改再发送，录音文件不持久保存。在普通 `http://NAS-IP:8080` 页面，可以用手机键盘自带的语音输入转成文字聊天。第一版未接入手机后台推送和离线语音识别。
 
@@ -68,7 +77,7 @@ AI 只获得列举分类、位置、查询物品与提出数据操作草稿的�
 sh deploy.sh
 ```
 
-脚本使用 `docker-compose.yml`，首次自动创建 `.env` 并生成随机访问密码、创建 data 目录、构建镜像并等待服务健康。访问密码保存在 `.env` 的 `HOME_STORAGE_PASSWORD` 一行。重复运行会保留已有配置和数据。若 NAS 要求管理员权限访问 Docker，使用 `sudo sh deploy.sh`；应用仍以非 root 用户运行。需要 Docker Compose v2.18 或更新版本。
+脚本使用 `docker-compose.yml`，首次自动创建 `.env` 并生成随机初始密码、创建 data 目录、构建镜像并等待服务健康。首次管理员密码保存在 `.env` 的 `HOME_STORAGE_PASSWORD` 一行；已有账号使用网页中设置的密码。重复运行会保留已有配置和数据。若 NAS 要求管理员权限访问 Docker，使用 `sudo sh deploy.sh`；应用仍以非 root 用户运行。需要 Docker Compose v2.18 或更新版本。
 
 该 Compose 使用 `build: .` 从当前项目构建，因此需要整个项目，不能只上传一个 YAML 文件。`compose.yaml` 保留用于兼容先前的部署方式，两份 Compose 当前内容一致。
 
@@ -91,7 +100,7 @@ docker compose ps
 docker compose logs --tail=80 homestorage
 ```
 
-手机连到家庭网络后，浏览器打开 `http://NAS的局域网IP:8080`，输入配置的密码。在群晖 Container Manager 中也可「项目 → 新增」选择仓库目录和 `compose.yaml`，先准备好 `.env` 与 data 权限。
+手机连到家庭网络后，浏览器打开 `http://NAS的局域网IP:8080`，使用用户名 `admin` 和配置的初始密码登录。在群晖 Container Manager 中也可「项目 → 新增」选择仓库目录和 `compose.yaml`，先准备好 `.env` 与 data 权限。
 
 宿主机 `./data` 挂载到网页容器 `/data`，保存 SQLite 数据库、照片和会话密钥。容器更新、删除或重建不会删除该目录。更新服务将同一目录挂载在 `/app-data`，仅在停止网页容器后备份或恢复；保持单个网页容器、单个服务进程访问同一个 SQLite 文件。
 
@@ -136,22 +145,18 @@ docker compose up -d --build
 
 ### 备份和恢复
 
-JSON 导出包含位置、物品和日志，**不包含照片，也不是完整恢复文件**。第一版没有 JSON 导入。完整备份使用 NAS 快照，或停服务后备份整个 data 目录：
+管理员可在网页设置的备份入口创建完整 ZIP、下载到本地，并配置 OpenList/AList WebDAV 定时上传。备份包含 SQLite 一致快照、引用照片、会话密钥和 SHA256 清单，也包含账号与配置凭据；请存放在私人设备或私有网盘目录。自动备份和自动上传默认关闭，详情见 [3.0 功能说明](FEATURES_V3.md#本地完整备份与网盘备份)。
 
-```bash
-docker compose stop
-tar -czf "homestorage-backup-$(date +%Y%m%d-%H%M%S).tar.gz" data
-docker compose start
-```
+JSON 和 CSV 适合档案交换，不能替代完整备份。全库恢复需停止 app 和 updater，先保留当前 data，再校验可信 ZIP 中的文件并恢复到原数据挂载，检查权限后启动。没有在线全库恢复按钮。Compose、`.env` 和更新状态卷应另行备份；升级后的数据库不要直接配旧版程序运行。具体流程见 [交接文档](交接文档.md)。
 
-如果备份命令失败，也应重新启动项目。恢复时停止整个项目，保留当前 data 副本，再解压可信备份替换 data，确认属主与 `.env` 中 `PUID/PGID` 一致，然后启动。`.env` 单独安全保存，更新状态卷也应纳入 NAS 备份。不要同时让两个网页容器对同一份数据库写入。
+也可以在停止整个项目后备份完整 data 目录，或使用 NAS 的数据卷快照。不要同时让两个网页容器对同一份数据库写入。
 
 ### 常见问题
 
 - **无法写入数据**：检查 data 目录权限与 `PUID/PGID` 是否一致，不要把容器改成 root 来规避权限。
 - **端口已占用**：修改 `.env` 的 `HOME_STORAGE_PORT`，重新执行 `docker compose up -d`。
 - **手机打不开**：检查手机与 NAS 的网络连通性、NAS 防火墙和映射端口。
-- **换密码**：修改 `.env` 后执行 `docker compose up -d`；不要将密码放到二维码中。
+- **换密码**：在网页更改个人密码；`HOME_STORAGE_PASSWORD` 只用于首次创建管理员，重建容器不会重置已有账号。不要将密码放到二维码中。
 - **外网访问**：通过自己的 HTTPS 反向代理或私有网络访问。密码登录页在普通 HTTP 上不加密传输；外网访问需要 HTTPS。
 
 HTTPS 反向代理需要保留浏览器请求的 `Host`（含非标准端口），否则同源校验会拒绝登录或保存。Nginx 配置使用 `proxy_set_header Host $http_host;`；群晖反向代理也应保留原始 Host。
@@ -174,10 +179,10 @@ python3 -m venv .venv
 .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080 --no-proxy-headers
 ```
 
-默认数据库位于 `./data`；可通过 `DATA_DIR` 覆盖。未设置 `HOME_STORAGE_PASSWORD` 时只适用于本机开发；Docker Compose 强制要求配置密码。API 契约见 [API_CONTRACT.md](API_CONTRACT.md)。`GET /health` 检查数据库连通性。
+默认数据库位于 `./data`；可通过 `DATA_DIR` 覆盖。开发时可运行 `python scripts/check_handover.py` 检查版本交接文档。未设置 `HOME_STORAGE_PASSWORD` 时只适用于本机开发；Docker Compose 强制要求配置密码。API 契约见 [API_CONTRACT.md](API_CONTRACT.md)。`GET /health` 检查数据库连通性。
 
 开发检查包括物品完整存取流程、层级校验、保质期边界、上传校验、身份校验、日志和持久化。NAS 实机需要按上述步骤自行部署后确认网络与目录权限。
 
 ## 发布正式更新（维护者）
 
-修改 `app/version.py` 的 `VERSION`，同步 `Dockerfile` 的 `HOMESTORAGE_VERSION` 默认值并更新 `RELEASE_NOTES.md`，提交后创建匹配的 `vMAJOR.MINOR.PATCH` Git tag。GitHub Actions 先核对 tag、源码版本与完整提交 SHA 并运行测试，再构建 amd64 / arm64 镜像，生成 Docker-save 的 gzip 包及 `homestorage-update.json` 校验清单，最后创建新的 GitHub Release。无需 GHCR 或 Docker Hub 登录；Release 继承仓库可见性。已有同名 Release 不会被覆盖，版本/tag 不一致会拒绝发布。
+修改 `app/version.py` 的 `VERSION`，同步 `Dockerfile` 的 `HOMESTORAGE_VERSION` 默认值及 `RELEASE_NOTES.md`，编写内容一致的 `交接文档.md` 和 `docs/handover/版本.md` 并运行 `python scripts/check_handover.py`，提交后创建匹配的 `vMAJOR.MINOR.PATCH` Git tag。GitHub Actions 先核对 tag、源码版本与完整提交 SHA 并运行测试，再构建 amd64 / arm64 镜像，生成 Docker-save 的 gzip 包及 `homestorage-update.json` 校验清单，附上本版本 Markdown 交接文档，最后创建新的 GitHub Release。无需 GHCR 或 Docker Hub 登录；Release 继承仓库可见性。已有同名 Release 不会被覆盖，版本/tag 不一致会拒绝发布。

@@ -299,7 +299,11 @@ def build_ai_router(services):
             ensure_schema(db)
             if name == "search_items":
                 observed["search_performed"] = True
-                found = [dict(row) for row in services["find_items"](db, params.query, params.include_archived)][:MAX_RESULTS]
+                with transaction(db):
+                    found = [dict(row) for row in services["find_items"](db, params.query, params.include_archived)][:MAX_RESULTS]
+                    if services.get("record_search") and params.query.strip():
+                        services["record_search"](db, params.query, [row["id"] for row in found],
+                                                  source="ai", actor=services["search_actor"]())
                 for item in found:
                     observed["items"][item["id"]] = item
                     if len(matched) < MAX_RESULTS or item["id"] in matched:

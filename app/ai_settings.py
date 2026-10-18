@@ -180,7 +180,7 @@ def build_ai_settings_router(store, *, password_required):
     router = APIRouter(prefix="/api/settings/ai", tags=["settings"])
 
     def require_password():
-        if not password_required:
+        if not (password_required() if callable(password_required) else password_required):
             raise HTTPException(403, "请先设置 HomeStorage 登录密码，再管理 AI 配置")
 
     @router.get("")
